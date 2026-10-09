@@ -18,6 +18,9 @@ def follow(follower, target) -> bool:
         raise ServiceError("You cannot follow yourself.", code="self_follow")
     if not target.is_active:
         raise ServiceError("This account is unavailable.", code="user_unavailable", status_code=404)
+    from apps.blocks.services import ensure_not_blocked
+
+    ensure_not_blocked(follower, target, "You can't follow this account.")
     try:
         with transaction.atomic():
             Follow.objects.create(follower=follower, following=target)

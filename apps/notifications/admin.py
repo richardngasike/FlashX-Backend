@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Notification
+from .models import DeviceToken, Notification
 
 
 @admin.register(Notification)
@@ -20,3 +20,13 @@ class NotificationAdmin(admin.ModelAdmin):
     raw_id_fields = ("recipient", "sender")
     date_hierarchy = "created_at"
     list_select_related = ("recipient", "sender")
+
+
+@admin.register(DeviceToken)
+class DeviceTokenAdmin(admin.ModelAdmin):
+    list_display = ("user", "platform", "app_version", "created_at", "last_seen_at")
+    list_filter = ("platform",)
+    search_fields = ("user__username",)
+    raw_id_fields = ("user",)
+    readonly_fields = ("token", "created_at", "last_seen_at")
+    list_select_related = ("user",)

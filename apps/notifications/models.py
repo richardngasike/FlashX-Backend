@@ -47,3 +47,26 @@ class Notification(models.Model):
 
     def __str__(self):
         return f"{self.notification_type} -> {self.recipient_id}"
+
+
+class DevicePlatform(models.TextChoices):
+    ANDROID = "android", "Android"
+    IOS = "ios", "iOS"
+
+
+class DeviceToken(models.Model):
+    """A Firebase Cloud Messaging registration token for one installed app."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="device_tokens")
+    token = models.CharField(max_length=512, unique=True)
+    platform = models.CharField(max_length=8, choices=DevicePlatform.choices)
+    app_version = models.CharField(max_length=32, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-last_seen_at",)
+        indexes = [models.Index(fields=["user", "-last_seen_at"])]
+
+    def __str__(self):
+        return f"{self.platform} token for {self.user_id}"

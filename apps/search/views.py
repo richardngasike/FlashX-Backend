@@ -9,8 +9,8 @@ from apps.core.pagination import SearchPagination
 from apps.posts.models import Category, Hashtag
 from apps.posts.serializers import CategorySerializer, HashtagSerializer, PostSerializer
 from apps.reels.serializers import ReelSerializer
-from apps.users.selectors import suggested_users
-from apps.users.serializers import UserListSerializer
+from apps.users.selectors import suggested_users, suggestion_context
+from apps.users.serializers import SuggestedUserSerializer, UserListSerializer
 
 from . import services
 from .models import RecentSearch
@@ -107,6 +107,12 @@ class ExploreView(APIView):
         return paginator.get_paginated_response(data)
 
 
+def _suggestions_payload(request, limit):
+    users = list(suggested_users(request.user, limit=limit))
+    context = {"request": request, "suggestions": suggestion_context(request.user, users)}
+    return SuggestedUserSerializer(users, many=True, context=context).data
+
+
 class ExploreOverviewView(APIView):
     """Everything the Discover screen needs above the grid, in one call."""
 
@@ -118,9 +124,7 @@ class ExploreOverviewView(APIView):
             {
                 "categories": _categories_payload(),
                 "trending_hashtags": HashtagSerializer(services.trending_hashtags(), many=True).data,
-                "suggested_users": UserListSerializer(
-                    suggested_users(request.user, limit=8), many=True, context=ctx
-                ).data,
+                "suggested_users": _suggestions_payload(request, limit=8),
                 "trending_reels": ReelSerializer(services.trending_reels(request.user), many=True, context=ctx).data,
             }
         )

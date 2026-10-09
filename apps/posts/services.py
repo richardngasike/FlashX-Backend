@@ -15,8 +15,10 @@ User = get_user_model()
 
 
 def _sync_tags(post, user_ids, actor):
+    from apps.blocks.selectors import hidden_user_ids
+
     current = set(PostTag.objects.filter(post=post).values_list("user_id", flat=True))
-    wanted = set(user_ids)
+    wanted = set(user_ids) - hidden_user_ids(actor)
     PostTag.objects.filter(post=post, user_id__in=current - wanted).delete()
     new_ids = wanted - current
     PostTag.objects.bulk_create([PostTag(post=post, user_id=uid) for uid in new_ids], ignore_conflicts=True)

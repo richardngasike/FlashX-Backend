@@ -1,3 +1,6 @@
+from django.db import transaction
+
+from . import push
 from .models import Notification
 
 
@@ -6,7 +9,11 @@ def notify(*, recipient, sender, notification_type, target_type, reference_id, p
         return None
     if recipient.pk == sender.pk or not recipient.is_active:
         return None
-    return Notification.objects.create(
+    from apps.blocks.selectors import is_blocked_between
+
+    if is_blocked_between(recipient, sender):
+        return None
+    notification = Notification.objects.create(
         recipient=recipient,
         sender=sender,
         notification_type=notification_type,
@@ -14,6 +21,10 @@ def notify(*, recipient, sender, notification_type, target_type, reference_id, p
         reference_id=str(reference_id),
         preview=(preview or "")[:160],
     )
+    if push.is_enabled():
+        # After commit, so a rolled-back action never reaches a phone.
+        transaction.on_commit(lambda: push.dispatch_notification(notification.pk))
+    return notification
 
 
 def withdraw(*, sender, notification_type, target_type, reference_id, recipient=None):

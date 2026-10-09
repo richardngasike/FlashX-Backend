@@ -1,5 +1,6 @@
 from django.db.models import Exists, OuterRef, Prefetch, Q, Value
 
+from apps.blocks.selectors import exclude_blocked
 from apps.follows.models import Follow
 from apps.likes.models import Like
 from apps.saves.models import SavedItem
@@ -13,9 +14,10 @@ def visible_posts(viewer):
     if not viewer or not viewer.is_authenticated:
         return qs.filter(visibility=Visibility.PUBLIC)
     following = Follow.objects.filter(follower=viewer).values("following_id")
-    return qs.filter(
+    qs = qs.filter(
         Q(visibility=Visibility.PUBLIC) | Q(author=viewer) | Q(visibility=Visibility.FOLLOWERS, author_id__in=following)
     )
+    return exclude_blocked(qs, viewer, "author_id")
 
 
 def with_relations(qs, viewer):

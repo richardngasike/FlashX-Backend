@@ -69,9 +69,34 @@ class UserListSerializer(UserSummarySerializer):
         return bool(getattr(obj, "follows_you", False))
 
 
+class SuggestedUserSerializer(UserListSerializer):
+    """A People-you-may-know card. Needs ``suggestions`` (from suggestion_context) in the context."""
+
+    mutual_count = serializers.SerializerMethodField()
+    mutual_preview = serializers.SerializerMethodField()
+    reason = serializers.SerializerMethodField()
+
+    class Meta(UserListSerializer.Meta):
+        fields = UserListSerializer.Meta.fields + ("mutual_count", "mutual_preview", "reason")
+        read_only_fields = fields
+
+    def _info(self, obj) -> dict:
+        return self.context.get("suggestions", {}).get(obj.pk, {})
+
+    def get_mutual_count(self, obj) -> int:
+        return self._info(obj).get("mutual_count", 0)
+
+    def get_mutual_preview(self, obj) -> list[str]:
+        return self._info(obj).get("mutual_preview", [])
+
+    def get_reason(self, obj) -> str:
+        return self._info(obj).get("reason", "")
+
+
 class UserProfileSerializer(UserListSerializer):
     cover = serializers.SerializerMethodField()
     is_me = serializers.SerializerMethodField()
+    is_blocked = serializers.SerializerMethodField()
 
     class Meta(UserListSerializer.Meta):
         fields = UserListSerializer.Meta.fields + (
@@ -84,11 +109,15 @@ class UserProfileSerializer(UserListSerializer):
             "last_seen_at",
             "created_at",
             "is_me",
+            "is_blocked",
         )
         read_only_fields = fields
 
     def get_cover(self, obj) -> dict | None:
         return cover_payload(obj.cover_image)
+
+    def get_is_blocked(self, obj) -> bool:
+        return bool(getattr(obj, "is_blocked", False))
 
     def get_is_me(self, obj) -> bool:
         request = self.context.get("request")

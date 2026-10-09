@@ -30,7 +30,7 @@ class ReelViewSet(EngagementMixin, mixins.ListModelMixin, mixins.RetrieveModelMi
         return super().get_throttles()
 
     def get_queryset(self):
-        qs = selectors.visible_reels()
+        qs = selectors.visible_reels(self.request.user)
         params = self.request.query_params
         if self.action == "list":
             if params.get("feed") == "following":
@@ -42,7 +42,7 @@ class ReelViewSet(EngagementMixin, mixins.ListModelMixin, mixins.RetrieveModelMi
         return selectors.with_relations(qs, self.request.user)
 
     def _serialize(self, reel_id, code=status.HTTP_200_OK):
-        reel = selectors.with_relations(selectors.visible_reels(), self.request.user).get(pk=reel_id)
+        reel = selectors.with_relations(selectors.visible_reels(self.request.user), self.request.user).get(pk=reel_id)
         return Response(self.get_serializer(reel).data, status=code)
 
     def _require_owner(self, reel):

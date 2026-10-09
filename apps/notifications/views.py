@@ -6,8 +6,8 @@ from rest_framework.views import APIView
 from apps.core.pagination import FeedCursorPagination
 from apps.media import cloudinary_service as cld
 
-from .models import Notification
-from .serializers import NotificationSerializer
+from .models import DeviceToken, Notification
+from .serializers import DeviceTokenDeleteSerializer, DeviceTokenSerializer, NotificationSerializer
 
 
 def resolve_targets(notifications):
@@ -133,4 +133,36 @@ class NotificationDeleteView(APIView):
 
     def delete(self, request, pk):
         Notification.objects.filter(recipient=request.user, pk=pk).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class DeviceTokenView(APIView):
+    """
+    POST registers this phone for push notifications (call after login and
+    whenever Firebase issues a new token). DELETE unregisters it (call before
+    logout). A token moves to whoever registered it last.
+    """
+
+    serializer_class = DeviceTokenSerializer
+
+    def post(self, request):
+        s = DeviceTokenSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        device, created = DeviceToken.objects.update_or_create(
+            token=s.validated_data["token"],
+            defaults={
+                "user": request.user,
+                "platform": s.validated_data["platform"],
+                "app_version": s.validated_data["app_version"],
+            },
+        )
+        return Response(
+            {"id": device.pk, "platform": device.platform},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    def delete(self, request):
+        s = DeviceTokenDeleteSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        DeviceToken.objects.filter(user=request.user, token=s.validated_data["token"]).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

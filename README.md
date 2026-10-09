@@ -53,6 +53,7 @@ backend/
     core/           response envelope, error handler, pagination, throttles, health, cron endpoint, seed_dev
     users/          custom User, JWT auth with presence, register/login, password reset, profiles
     follows/        follow graph and counters
+    blocks/         blocking and the filters that hide blocked users everywhere
     media/          MediaAsset, Cloudinary service, upload signing and validation, orphan purge
     posts/          posts, carousel media, hashtags, categories, tags, mood/music/event, feed, visibility
     comments/       threaded comments (one reply level), comment likes
@@ -61,10 +62,10 @@ backend/
     stories/        24-hour stories, views, reactions, replies to DM, expiry purge
     reels/          short vertical video with distinct view counting
     messaging/      direct and group conversations, read state, shared posts/reels/stories
-    notifications/  activity feed
+    notifications/  activity feed, device tokens, push delivery (FCM)
     search/         search, recent searches, explore and discovery
     reports/        content reports and moderation actions
-  tests/            API test suite (93 tests, runs against PostgreSQL)
+  tests/            API test suite (120 tests, runs against PostgreSQL)
   .env.example      every environment variable, documented
   .env              ready-to-run local configuration (git-ignored)
   vercel.json       region, function timeout, daily cron
@@ -210,6 +211,7 @@ All settings come from environment variables: `.env` locally, or *Project Settin
 | `JWT_REFRESH_TOKEN_LIFETIME` | `30` | Days. Refresh tokens rotate and the old one is blacklisted |
 | `JWT_SIGNING_KEY` | blank, which uses `SECRET_KEY` | Set a separate 32+ character key to invalidate tokens without rotating `SECRET_KEY` |
 | `CRON_SECRET` | empty | Bearer token for `/api/cron/maintenance/`. When empty, the endpoint returns 503 |
+| `FCM_SERVICE_ACCOUNT_JSON` | empty | Firebase service-account key (raw JSON or base64) for push notifications. Empty turns push off |
 
 ### CORS, CSRF and HTTPS
 
@@ -341,11 +343,15 @@ All paths are under `/api/`. Every endpoint needs a token except `health/`, `aut
 | GET / PATCH / DELETE | `users/me/` | PATCH: `full_name, username, bio, website, location, profile_image_id, cover_image_id` (`null` removes an image). DELETE needs `password` |
 | GET | `users/me/likes/` | Posts you liked, newest like first |
 | GET | `users/me/saved/?type=posts\|reels` | Saved items, newest save first |
-| GET | `users/{id}/`, `users/by-username/{username}/` | Profile with counts, `is_following`, `follows_you`, `is_me` |
+| GET | `users/{id}/`, `users/by-username/{username}/` | Profile with counts, `is_following`, `follows_you`, `is_me`, `is_blocked`. 404 if they blocked you |
 | POST / DELETE | `users/{id}/follow/` | Follow / unfollow |
 | DELETE | `users/{id}/remove-follower/` | |
 | GET | `users/{id}/followers/`, `users/{id}/following/` | Optional `?q=` filter |
-| GET | `users/suggested/?limit=` | Ranked by mutual connections |
+| GET | `users/suggested/?page=&page_size=` | People you may know: people who follow you, then mutual connections. Each card has `mutual_count`, `mutual_preview` (up to 2 first names) and `reason` ("Follows you", "Followed by Faith + 2 more"). `limit` works as the page size |
+| POST / DELETE | `users/{id}/block/` | Block / unblock. Blocking removes follows both ways and the notifications between you |
+| GET | `users/me/blocked/` | Accounts you blocked, with `blocked_at` (page style) |
+
+**Blocking** works in both directions. Neither person sees the other's posts, reels, stories, comments, likes lists, search results or suggestions. Neither can follow, message, tag or notify the other. The person who blocked can still open the other's profile (`is_blocked: true`) to unblock; the blocked person gets 404. Existing direct threads stay listed with `is_blocked: true`, and sending returns `403 blocked`.
 
 ### Media
 
@@ -422,6 +428,7 @@ Post `type` is one of `text`, `image`, `carousel`, `video` or `mixed`.
 | GET | `notifications/unread-count/` | `{notifications, messages}` |
 | POST | `notifications/{id}/read/`, `notifications/read-all/` | |
 | DELETE | `notifications/{id}/` | |
+| POST / DELETE | `notifications/devices/` | Register this phone for push (`token, platform` = `android\|ios`, `app_version?`) after login and on token refresh; DELETE with `token` before logout |
 | GET | `search/?q=&type=all\|users\|hashtags\|posts\|reels` | `all` returns 5 of each |
 | GET / POST / DELETE | `search/recent/` | POST `kind` (`query\|user\|hashtag`), `value`. DELETE clears all |
 | DELETE | `search/recent/{id}/` | Removes one entry |
@@ -516,13 +523,13 @@ ALTER ROLE flashx CREATEDB;
 python manage.py test tests --settings=config.settings.test
 ```
 
-The 93 tests cover:
+The 120 tests cover:
 
-- **Accounts:** auth and token rotation, password reset, profile edits and image replacement, the follow graph.
+- **Accounts:** auth and token rotation, password reset, profile edits and image replacement, the follow graph, blocking in both directions, People you may know.
 - **Media:** upload signing, ownership checks, size/type/duration limits.
 - **Posts:** visibility, feed pagination and query count, likes, saves and shares, comment threading and deletion rights.
 - **Stories and reels:** stories (tray, expiry, reactions, replies, viewers) and reels (distinct views).
-- **Messaging and notifications:** direct and group threads, read receipts, mute, soft delete, notifications.
+- **Messaging and notifications:** direct and group threads, read receipts, mute, soft delete, notifications, push delivery (FCM payloads, muted threads, dead tokens, rollbacks; FCM is mocked).
 - **Discovery and moderation:** search and explore, reports and moderation.
 - **Operations:** the cron endpoint and every admin page.
 
@@ -615,6 +622,22 @@ Shell variables take priority over `.env`, so these commands target the Neon dat
 - On the Hobby plan, crons run once a day at a random minute within the scheduled hour.
 - If you move the function region, move the database to the same region.
 
+### Push notifications (Firebase)
+
+Push is sent from the API through Firebase Cloud Messaging (HTTP v1). It is off until the key is set.
+
+1. In the [Firebase console](https://console.firebase.google.com), create a project, then add the Android app (`app.flashx.flashx`) and the iOS app. Running `flutterfire configure` in `mobile/` does this for you.
+2. Open *Project settings > Service accounts > Generate new private key*.
+3. Add the key to Vercel as `FCM_SERVICE_ACCOUNT_JSON`. Paste the JSON on one line, or base64 it first: `base64 -i key.json | tr -d '\n'`. Then redeploy.
+4. iOS delivery also needs an APNs key (Apple Developer account) uploaded under *Project settings > Cloud Messaging*.
+
+Every notification the API stores (likes, comments, follows, mentions, tags, story reactions and replies, messages, shares) is pushed to the recipient's phones after the database commit.
+
+- Muted conversations, blocked users and your own actions are never pushed.
+- Messages go to the high-priority `flashx_messages` channel. Everything else goes to `flashx_activity`.
+- Both channels play the bundled `flashx_notification` sound.
+- Tokens that Firebase reports as dead are deleted automatically.
+
 ### Linux VPS
 
 1. Install Python 3.12+, PostgreSQL and Nginx, and create the database (section 3).
@@ -665,9 +688,8 @@ Everything in the endpoint reference is implemented and tested.
 
 The following are not part of this version, and no placeholder code exists for them:
 
-- **Real-time delivery.** Chat, presence and unread counts use REST and polling. `is_online` comes from API activity within `ONLINE_WINDOW_SECONDS`. WebSockets (Django Channels + Redis) are the next step for live chat.
-- **Push notifications** (FCM / APNs). Notifications are stored and served by the API.
-- **Blocking and private accounts.** Visibility is set per post (`public`, `followers`, `private`).
+- **Real-time delivery.** Chat, presence and unread counts use REST and polling; push notifications alert phones when the app is closed. `is_online` comes from API activity within `ONLINE_WINDOW_SECONDS`. WebSockets (Django Channels + Redis) are the next step for live chat.
+- **Private accounts.** Visibility is set per post (`public`, `followers`, `private`).
+- **Voice calls and live streaming** (next phases, on LiveKit).
 - **Email verification** on sign-up.
 - **Personalised ranking.** Explore ranks by engagement and recency.
-# FlashX-Backend

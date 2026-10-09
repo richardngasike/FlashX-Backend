@@ -31,7 +31,7 @@ class CommentViewSet(GenericViewSet):
 
         if comment.post_id and not visible_posts(self.request.user).filter(pk=comment.post_id).exists():
             raise NotFound()
-        if comment.reel_id and not visible_reels().filter(pk=comment.reel_id).exists():
+        if comment.reel_id and not visible_reels(self.request.user).filter(pk=comment.reel_id).exists():
             raise NotFound()
 
     def get_object(self):

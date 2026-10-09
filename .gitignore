@@ -1,10 +1,18 @@
+# Secrets: every env file except the documented template
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+
+# Python
 __pycache__/
 *.pyc
-staticfiles/
 .venv/
+venv/
+.ruff_cache/
+.pytest_cache/
 .coverage
 htmlcov/
+
+# Build output
+staticfiles/
 .vercel/

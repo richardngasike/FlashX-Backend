@@ -128,12 +128,24 @@ class ConversationSerializer(serializers.Serializer):
     last_message = serializers.SerializerMethodField()
     unread_count = serializers.IntegerField(default=0)
     is_muted = serializers.BooleanField(default=False)
+    is_blocked = serializers.SerializerMethodField()
     last_message_at = serializers.DateTimeField()
     created_at = serializers.DateTimeField()
 
     def _others(self, obj):
         me = self.context["request"].user.pk
         return [m.user for m in obj.memberships.all() if m.user_id != me]
+
+    def get_is_blocked(self, obj) -> bool:
+        """Direct threads only: True when either person has blocked the other (sending is disabled)."""
+        if obj.is_group:
+            return False
+        if "_hidden_user_ids" not in self.context:
+            from apps.blocks.selectors import hidden_user_ids
+
+            self.context["_hidden_user_ids"] = hidden_user_ids(self.context["request"].user)
+        hidden = self.context["_hidden_user_ids"]
+        return any(u.pk in hidden for u in self._others(obj))
 
     def get_title(self, obj) -> str:
         if obj.title:

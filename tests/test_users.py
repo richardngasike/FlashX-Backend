@@ -125,3 +125,59 @@ class FollowTests(FlashXTestCase):
         self.assertEqual(ids[0], mutual.id)
         self.assertNotIn(self.other.id, ids)
         self.assertNotIn(self.me.id, ids)
+
+
+class PeopleYouMayKnowTests(FlashXTestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.follows.services import follow
+
+        self.follow = follow
+        self.me = self.auth(self.make_user("me_pymk"))
+
+    def test_reason_mutual_preview_and_order(self):
+        faith = self.make_user("faith", full_name="Faith Wanjiku")
+        kelvin = self.make_user("kelvin", full_name="Kelvin M")
+        brian = self.make_user("brian", full_name="Brian Otieno")
+        target = self.make_user("target")
+        fan = self.make_user("fan")
+        for friend in (faith, kelvin, brian):
+            self.follow(self.me, friend)
+            self.follow(friend, target)
+        self.follow(fan, self.me)
+
+        data = self.assertOk(self.client.get(reverse("users-suggested")))
+        rows = {r["username"]: r for r in data["results"]}
+        self.assertEqual(data["results"][0]["username"], "fan")
+        self.assertEqual(rows["fan"]["reason"], "Follows you")
+        self.assertEqual(rows["target"]["mutual_count"], 3)
+        self.assertEqual(len(rows["target"]["mutual_preview"]), 2)
+        self.assertTrue(rows["target"]["reason"].endswith("+ 2 more"))
+        self.assertNotIn("faith", rows)
+        self.assertIn("total_pages", data)
+
+    def test_two_mutuals_are_named(self):
+        a = self.make_user("a_user", full_name="Amina Hassan")
+        b = self.make_user("b_user", full_name="Willy Odhiambo")
+        target = self.make_user("target2")
+        for friend in (a, b):
+            self.follow(self.me, friend)
+            self.follow(friend, target)
+        rows = {r["username"]: r for r in self.assertOk(self.client.get(reverse("users-suggested")))["results"]}
+        self.assertEqual(set(rows["target2"]["mutual_preview"]), {"Amina", "Willy"})
+        self.assertIn(" and ", rows["target2"]["reason"])
+
+    def test_pagination_and_limit(self):
+        for _ in range(5):
+            self.make_user()
+        page1 = self.assertOk(self.client.get(reverse("users-suggested"), {"page_size": 2}))
+        self.assertEqual(len(page1["results"]), 2)
+        self.assertIsNotNone(page1["next"])
+        page2 = self.assertOk(self.client.get(reverse("users-suggested"), {"page_size": 2, "page": 2}))
+        self.assertFalse({r["id"] for r in page1["results"]} & {r["id"] for r in page2["results"]})
+        self.assertEqual(len(self.assertOk(self.client.get(reverse("users-suggested"), {"limit": 3}))["results"]), 3)
+
+    def test_explore_overview_cards_have_reason(self):
+        self.make_user("someone")
+        overview = self.assertOk(self.client.get(reverse("explore-overview")))
+        self.assertIn("reason", overview["suggested_users"][0])

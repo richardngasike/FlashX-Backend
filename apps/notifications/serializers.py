@@ -57,3 +57,13 @@ class NotificationSerializer(serializers.ModelSerializer):
     def get_target(self, obj) -> dict | None:
         """Thumbnail + route hint resolved in bulk by the view."""
         return self.context.get("targets", {}).get((obj.target_type, obj.reference_id))
+
+
+class DeviceTokenSerializer(serializers.Serializer):
+    token = serializers.CharField(max_length=512, trim_whitespace=True)
+    platform = serializers.ChoiceField(choices=["android", "ios"])
+    app_version = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
+
+
+class DeviceTokenDeleteSerializer(serializers.Serializer):
+    token = serializers.CharField(max_length=512, trim_whitespace=True)

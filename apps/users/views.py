@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.db.models import Exists, OuterRef
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.exceptions import ValidationError
@@ -10,7 +11,10 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenRefreshView
 
+from apps.blocks.models import Block
+from apps.blocks.selectors import blocking_me
 from apps.core.exceptions import ServiceError
+from apps.core.pagination import StandardPagination
 from apps.core.throttles import AuthRateThrottle, PasswordResetThrottle
 from apps.follows import services as follow_services
 from apps.follows.models import Follow
@@ -25,6 +29,7 @@ from .serializers import (
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
     RegisterSerializer,
+    SuggestedUserSerializer,
     UpdateMeSerializer,
     UserListSerializer,
     UserProfileSerializer,
@@ -195,7 +200,11 @@ class UserDetailView(generics.RetrieveAPIView):
     serializer_class = UserProfileSerializer
 
     def get_queryset(self):
-        return selectors.with_follow_flags(selectors.base_users(), self.request.user)
+        # Someone who blocked you is not found; someone you blocked stays visible so you can unblock.
+        viewer = self.request.user
+        qs = selectors.base_users().exclude(pk__in=blocking_me(viewer))
+        qs = qs.annotate(is_blocked=Exists(Block.objects.filter(blocker=viewer, blocked=OuterRef("pk"))))
+        return selectors.with_follow_flags(qs, viewer)
 
 
 class UserByUsernameView(UserDetailView):
@@ -248,7 +257,7 @@ class _FollowListBase(generics.ListAPIView):
             ids = Follow.objects.filter(following=target).values("follower_id")
         else:
             ids = Follow.objects.filter(follower=target).values("following_id")
-        qs = selectors.base_users().filter(pk__in=ids)
+        qs = selectors.base_users(self.request.user).filter(pk__in=ids)
         q = self.request.query_params.get("q")
         if q:
             from django.db.models import Q
@@ -266,12 +275,20 @@ class FollowingView(_FollowListBase):
 
 
 class SuggestedUsersView(APIView):
-    serializer_class = UserListSerializer
+    """
+    GET /api/users/suggested/ — People you may know, paginated for scrolling
+    (``page``, ``page_size`` up to 50; ``limit`` is accepted as the page size).
+    """
+
+    serializer_class = SuggestedUserSerializer
 
     def get(self, request):
-        try:
-            limit = max(1, min(int(request.query_params.get("limit", 20)), 50))
-        except ValueError:
-            limit = 20
-        users = selectors.suggested_users(request.user, limit=limit)
-        return Response({"results": UserListSerializer(users, many=True, context={"request": request}).data})
+        paginator = StandardPagination()
+        if "limit" in request.query_params and "page_size" not in request.query_params:
+            try:
+                paginator.page_size = max(1, min(int(request.query_params["limit"]), paginator.max_page_size))
+            except ValueError:
+                pass
+        page = paginator.paginate_queryset(selectors.suggested_users_queryset(request.user), request, view=self)
+        context = {"request": request, "suggestions": selectors.suggestion_context(request.user, page)}
+        return paginator.get_paginated_response(SuggestedUserSerializer(page, many=True, context=context).data)

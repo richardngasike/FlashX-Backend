@@ -19,7 +19,7 @@ def clean(q: str) -> str:
 def search_users(viewer, q):
     q = q.lstrip("@")
     qs = (
-        base_users()
+        base_users(viewer)
         .filter(Q(username__icontains=q) | Q(full_name__icontains=q))
         .annotate(
             rank=Case(
@@ -60,7 +60,7 @@ def search_posts(viewer, q):
 
 def search_reels(viewer, q):
     tag = q.lstrip("#").lower()
-    qs = reel_selectors.visible_reels().filter(Q(caption__icontains=q) | Q(hashtags__name=tag)).distinct()
+    qs = reel_selectors.visible_reels(viewer).filter(Q(caption__icontains=q) | Q(hashtags__name=tag)).distinct()
     return reel_selectors.with_relations(qs, viewer).order_by("-created_at", "-id")
 
 
@@ -105,7 +105,7 @@ def trending_hashtags(days=7, limit=15):
 def trending_reels(viewer, days=7, limit=10):
     since = timezone.now() - timedelta(days=days)
     qs = (
-        reel_selectors.visible_reels()
+        reel_selectors.visible_reels(viewer)
         .filter(created_at__gte=since)
         .annotate(score=engagement_score() + F("views") / 10)
     )

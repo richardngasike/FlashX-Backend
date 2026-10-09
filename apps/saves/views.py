@@ -25,7 +25,9 @@ class SavedListView(APIView):
         saved_at = Subquery(saved.filter(**{kind: OuterRef("pk")}).values("created_at")[:1])
         ids = saved.values(f"{kind}_id")
         if kind == "reel":
-            qs = reel_selectors.with_relations(reel_selectors.visible_reels().filter(pk__in=ids), request.user)
+            qs = reel_selectors.with_relations(
+                reel_selectors.visible_reels(request.user).filter(pk__in=ids), request.user
+            )
             serializer = ReelSerializer
         else:
             qs = post_selectors.with_relations(

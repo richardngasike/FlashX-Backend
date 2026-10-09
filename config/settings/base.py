@@ -38,6 +38,7 @@ LOCAL_APPS = [
     "apps.core",
     "apps.users",
     "apps.follows",
+    "apps.blocks",
     "apps.media",
     "apps.posts",
     "apps.comments",
@@ -224,6 +225,11 @@ FLASHX = {
 # Shared secret for /api/cron/* endpoints. Vercel Cron sends it as
 # "Authorization: Bearer <CRON_SECRET>"; the endpoints refuse to run without it.
 CRON_SECRET = config("CRON_SECRET", default="")
+
+# ---------------------------------------------------------------------------
+# Push notifications (Firebase Cloud Messaging). Empty key = push off.
+# ---------------------------------------------------------------------------
+FCM = {"SERVICE_ACCOUNT_JSON": config("FCM_SERVICE_ACCOUNT_JSON", default="")}
 
 # ---------------------------------------------------------------------------
 # Email (password reset)

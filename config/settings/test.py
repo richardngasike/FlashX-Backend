@@ -11,6 +11,7 @@ STORAGES = {
     "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
 }
 
+FCM = {"SERVICE_ACCOUNT_JSON": ""}
 CLOUDINARY.update({"CLOUD_NAME": "flashx-test", "API_KEY": "test-key", "API_SECRET": "test-secret"})
 
 # Throttling is exercised by dedicated tests; keep it out of the way elsewhere.

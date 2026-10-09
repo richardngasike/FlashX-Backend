@@ -3,6 +3,7 @@ from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
+from apps.blocks.views import BlockedUsersView
 from apps.core.cron import MaintenanceCronView
 from apps.core.views import HealthView
 from apps.posts.views import LikedPostsView
@@ -17,6 +18,7 @@ api = [
     path("health/", HealthView.as_view(), name="health"),
     path("cron/maintenance/", MaintenanceCronView.as_view(), name="cron-maintenance"),
     path("auth/", include("apps.users.auth_urls")),
+    path("users/me/blocked/", BlockedUsersView.as_view(), name="users-me-blocked"),
     path("users/me/saved/", SavedListView.as_view(), name="users-me-saved"),
     path("users/me/likes/", LikedPostsView.as_view({"get": "list"}), name="users-me-likes"),
     path("users/", include("apps.users.urls")),

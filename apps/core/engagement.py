@@ -28,7 +28,9 @@ class EngagementMixin(CommentListMixin):
 
         target = self.get_object()
         user_ids = Like.objects.filter(**{target._meta.model_name: target}).values("user_id")
-        qs = with_follow_flags(base_users().filter(pk__in=user_ids), request.user).order_by("-created_at", "-id")
+        qs = with_follow_flags(base_users(request.user).filter(pk__in=user_ids), request.user).order_by(
+            "-created_at", "-id"
+        )
         paginator = FeedCursorPagination()
         page = paginator.paginate_queryset(qs, request, view=self)
         return paginator.get_paginated_response(UserListSerializer(page, many=True, context={"request": request}).data)

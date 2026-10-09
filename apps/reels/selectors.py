@@ -1,5 +1,6 @@
 from django.db.models import Exists, OuterRef, Value
 
+from apps.blocks.selectors import exclude_blocked
 from apps.follows.models import Follow
 from apps.likes.models import Like
 from apps.saves.models import SavedItem
@@ -7,8 +8,9 @@ from apps.saves.models import SavedItem
 from .models import Reel
 
 
-def visible_reels():
-    return Reel.objects.filter(is_hidden=False, author__is_active=True)
+def visible_reels(viewer=None):
+    qs = Reel.objects.filter(is_hidden=False, author__is_active=True)
+    return exclude_blocked(qs, viewer, "author_id")
 
 
 def with_relations(qs, viewer):

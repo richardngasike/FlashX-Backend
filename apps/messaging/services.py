@@ -2,6 +2,8 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from apps.blocks.selectors import hidden_user_ids, is_blocked_between
+from apps.blocks.services import ensure_not_blocked
 from apps.core.exceptions import ServiceError
 from apps.media.models import MediaPurpose
 from apps.media.services import claim_one, release_asset
@@ -24,6 +26,7 @@ def _active_user(user_id):
 def get_or_create_direct(user, other) -> Conversation:
     if user.pk == other.pk:
         raise ServiceError("You cannot message yourself.", code="self_message")
+    ensure_not_blocked(user, other, "You can't message this account.")
     key = Conversation.make_direct_key(user.pk, other.pk)
     convo = Conversation.objects.filter(direct_key=key).first()
     if convo:
@@ -49,7 +52,7 @@ def create_group(user, participant_ids, title="") -> Conversation:
         raise ServiceError("A group needs at least two other people.", code="group_too_small")
     if len(ids) + 1 > MAX_GROUP_SIZE:
         raise ServiceError(f"Groups are limited to {MAX_GROUP_SIZE} people.", code="group_too_large")
-    users = list(User.objects.filter(pk__in=ids, is_active=True))
+    users = list(User.objects.filter(pk__in=ids, is_active=True).exclude(pk__in=hidden_user_ids(user)))
     if len(users) != len(ids):
         raise ServiceError("One or more people are unavailable.", code="user_unavailable")
     convo = Conversation.objects.create(is_group=True, title=(title or "").strip()[:80], created_by=user)
@@ -85,6 +88,14 @@ def send_message(
 ):
     if not ConversationParticipant.objects.filter(conversation=conversation, user=sender).exists():
         raise ServiceError("Conversation not found.", code="not_found", status_code=404)
+    if not conversation.is_group:
+        other = (
+            ConversationParticipant.objects.filter(conversation=conversation)
+            .exclude(user=sender)
+            .select_related("user")
+        ).first()
+        if other is not None and is_blocked_between(sender, other.user):
+            raise ServiceError("You can't message this account.", code="blocked", status_code=403)
     content = (content or "").strip()
     if not (content or media_id or shared_post or shared_reel):
         raise ServiceError("Message cannot be empty.", code="empty_message")

@@ -1,12 +1,13 @@
 from django.db.models import Exists, OuterRef, Q
 
+from apps.blocks.selectors import exclude_blocked
 from apps.follows.models import Follow
 
 from .models import Story, StoryReaction, StoryView
 
 
 def active_stories(viewer):
-    qs = Story.objects.active().select_related("author__profile_image")
+    qs = exclude_blocked(Story.objects.active().select_related("author__profile_image"), viewer, "author_id")
     return qs.annotate(
         is_seen=Exists(StoryView.objects.filter(story=OuterRef("pk"), viewer=viewer)),
         my_reaction=StoryReaction.objects.filter(story=OuterRef("pk"), user=viewer).values("reaction")[:1],

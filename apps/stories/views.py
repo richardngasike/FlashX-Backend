@@ -62,7 +62,7 @@ class StoryViewSet(GenericViewSet):
 
     @action(detail=False, methods=["get"], url_path=r"user/(?P<user_id>\d+)")
     def user(self, request, user_id=None):
-        author = get_object_or_404(base_users(), pk=user_id)
+        author = get_object_or_404(base_users(request.user), pk=user_id)
         stories = self.get_queryset().filter(author=author).order_by("created_at", "id")
         return Response({"results": self.get_serializer(stories, many=True).data})
 
@@ -101,7 +101,7 @@ class StoryViewSet(GenericViewSet):
         viewer_ids = StoryView.objects.filter(story=story).values("viewer_id")
         reactions = dict(StoryReaction.objects.filter(story=story).values_list("user_id", "reaction"))
         viewed_at = StoryView.objects.filter(story=story, viewer=OuterRef("pk")).values("created_at")[:1]
-        qs = with_follow_flags(base_users().filter(pk__in=viewer_ids), request.user).annotate(
+        qs = with_follow_flags(base_users(request.user).filter(pk__in=viewer_ids), request.user).annotate(
             viewed_at=Subquery(viewed_at)
         )
         paginator = ViewersCursor()
