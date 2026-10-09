@@ -1,0 +1,11 @@
+from django.apps import AppConfig
+
+
+class MediaConfig(AppConfig):
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "apps.media"
+    label = "media"
+    verbose_name = "Uploaded media"
+
+    def ready(self):
+        from . import signals  # noqa: F401

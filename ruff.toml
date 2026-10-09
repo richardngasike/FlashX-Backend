@@ -1,0 +1,10 @@
+# Lint/format configuration: ruff check . && ruff format --check .
+target-version = "py312"
+line-length = 120
+extend-exclude = ["*/migrations/*", "staticfiles"]
+
+[lint]
+select = ["E", "F", "W", "I", "B"]
+
+[lint.isort]
+known-first-party = ["apps", "config", "tests"]

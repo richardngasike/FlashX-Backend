@@ -1,0 +1,14 @@
+# Not needed in the deployed function
+.venv/
+venv/
+**/__pycache__/
+.ruff_cache/
+.pytest_cache/
+.env
+.env.*
+!.env.example
+staticfiles/
+tests/
+Dockerfile
+docker-compose.yml
+ruff.toml

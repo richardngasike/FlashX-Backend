@@ -1,0 +1,10 @@
+.env
+.env.local
+.env.*.local
+__pycache__/
+*.pyc
+staticfiles/
+.venv/
+.coverage
+htmlcov/
+.vercel/

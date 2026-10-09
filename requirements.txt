@@ -1,0 +1,15 @@
+# Python 3.12 - 3.14. Django 5.2 is the current LTS (security fixes until April 2028).
+Django>=5.2.8,<5.3
+djangorestframework>=3.16,<3.18
+djangorestframework-simplejwt>=5.5,<6
+django-cors-headers>=4.7,<5
+django-filter>=25.1
+drf-spectacular>=0.28
+dj-database-url>=3.0
+python-decouple>=3.8
+psycopg[binary]>=3.2.10
+cloudinary>=1.44
+whitenoise>=6.9
+Pillow>=11.3
+# Only used by the Dockerfile / VPS deployments (Vercel runs the WSGI app itself)
+gunicorn>=23.0
