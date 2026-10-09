@@ -18,4 +18,9 @@ class HealthView(APIView):
                 cursor.execute("SELECT 1")
         except Exception:  # pragma: no cover - reported, not raised
             db_ok = False
-        return Response({"status": "ok" if db_ok else "degraded", "database": db_ok}, status=200 if db_ok else 503)
+        from apps.notifications.push import is_enabled as push_enabled
+
+        return Response(
+            {"status": "ok" if db_ok else "degraded", "database": db_ok, "push": push_enabled()},
+            status=200 if db_ok else 503,
+        )

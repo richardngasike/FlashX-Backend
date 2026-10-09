@@ -166,3 +166,35 @@ class DeviceTokenView(APIView):
         s.is_valid(raise_exception=True)
         DeviceToken.objects.filter(user=request.user, token=s.validated_data["token"]).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class TestPushView(APIView):
+    """
+    POST /api/notifications/devices/test/ — sends a test notification to your
+    own phones and reports the outcome, to check push end to end.
+    """
+
+    serializer_class = DeviceTokenSerializer
+
+    def post(self, request):
+        from . import push
+
+        result = push.send_to_user_detailed(
+            request.user.pk,
+            title="FlashX",
+            body="Notifications are working on this phone.",
+            data={"type": "test", "target_type": "test", "reference_id": ""},
+            channel=push.CHANNEL_MESSAGES,
+            tag="flashx-test",
+            badge=push.unread_badge(request.user.pk),
+            high_priority=True,
+        )
+        if not result["enabled"]:
+            message = "Push is not configured on the server (FCM_SERVICE_ACCOUNT_JSON is empty)."
+        elif result["devices"] == 0:
+            message = "This account has no registered phones. Open the app, sign in and allow notifications."
+        elif result["sent"]:
+            message = f"Sent to {result['sent']} of {result['devices']} phone(s)."
+        else:
+            message = "Firebase did not accept the notification: " + "; ".join(result["errors"][:3])
+        return Response({**result, "message": message})

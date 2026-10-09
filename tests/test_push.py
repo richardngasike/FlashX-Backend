@@ -160,3 +160,39 @@ class PushConfigTests(FlashXTestCase):
         ):
             self.assertEqual(push.send_to_user(user.pk, title="t", body="b", data={}, channel="c"), 0)
             post.assert_not_called()
+
+
+class TestPushEndpointTests(FlashXTestCase):
+    def setUp(self):
+        super().setUp()
+        self.user = self.auth(self.make_user())
+        self.url = reverse("notifications-test-push")
+
+    def test_reports_disabled(self):
+        data = self.assertOk(self.client.post(self.url))
+        self.assertFalse(data["enabled"])
+        self.assertIn("not configured", data["message"])
+
+    def test_reports_missing_devices_and_success(self):
+        mock.patch.object(push, "is_enabled", return_value=True).start()
+        mock.patch.object(push, "_access_token", return_value=("access", "proj")).start()
+        post = mock.patch("requests.post", return_value=FakeResponse()).start()
+        self.assertIn("no registered phones", self.assertOk(self.client.post(self.url))["message"])
+        DeviceToken.objects.create(user=self.user, token="t1", platform="android")
+        data = self.assertOk(self.client.post(self.url))
+        self.assertEqual((data["devices"], data["sent"]), (1, 1))
+        msg = post.call_args.kwargs["json"]["message"]
+        self.assertEqual(msg["android"]["notification"]["channel_id"], push.CHANNEL_MESSAGES)
+        self.assertIn("notification_count", msg["android"]["notification"])
+
+    def test_reports_firebase_errors(self):
+        mock.patch.object(push, "is_enabled", return_value=True).start()
+        mock.patch.object(push, "_access_token", return_value=("access", "proj")).start()
+        mock.patch("requests.post", return_value=FakeResponse(403, {"error": {"status": "PERMISSION_DENIED"}})).start()
+        DeviceToken.objects.create(user=self.user, token="t1", platform="android")
+        data = self.assertOk(self.client.post(self.url))
+        self.assertEqual(data["sent"], 0)
+        self.assertIn("PERMISSION_DENIED", data["message"])
+
+    def test_health_reports_push_flag(self):
+        self.assertIn("push", self.assertOk(self.client.get(reverse("health"))))

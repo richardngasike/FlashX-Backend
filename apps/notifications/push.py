@@ -93,9 +93,17 @@ def build_message(token, *, title, body, data, channel, tag="", badge=None, high
         aps["thread-id"] = tag
     if badge is not None:
         aps["badge"] = int(badge)
-    android_notification = {"channel_id": channel, "sound": SOUND_ANDROID}
+    android_notification = {
+        "channel_id": channel,
+        "sound": SOUND_ANDROID,
+        "default_vibrate_timings": True,
+        "visibility": "PRIVATE",
+    }
     if tag:
         android_notification["tag"] = tag
+    if badge is not None:
+        # Launchers that show numbers (Samsung, Xiaomi, ...) use this for the app icon badge.
+        android_notification["notification_count"] = int(badge)
     return {
         "message": {
             "token": token,
@@ -122,24 +130,30 @@ def _error_status(response) -> str:
     return error.get("status", "")
 
 
-def send_to_user(user_id, *, title, body, data, channel, tag="", badge=None, high_priority=False) -> int:
-    """Send to every device of ``user_id``. Returns how many deliveries FCM accepted."""
-    if not is_enabled():
-        return 0
+def send_to_user_detailed(user_id, *, title, body, data, channel, tag="", badge=None, high_priority=False) -> dict:
+    """
+    Send to every device of ``user_id`` and report what happened:
+    ``{"enabled", "devices", "sent", "removed", "errors"}``. Never raises.
+    """
+    result = {"enabled": is_enabled(), "devices": 0, "sent": 0, "removed": 0, "errors": []}
+    if not result["enabled"]:
+        return result
     import requests
 
     from .models import DeviceToken
 
     tokens = list(DeviceToken.objects.filter(user_id=user_id).values_list("pk", "token"))
+    result["devices"] = len(tokens)
     if not tokens:
-        return 0
+        return result
     try:
         access_token, project = _access_token()
-    except Exception:  # noqa: BLE001 - misconfiguration must never break the request
+    except Exception as exc:  # noqa: BLE001 - misconfiguration must never break the request
         logger.exception("Push disabled: could not load FCM credentials")
-        return 0
+        result["errors"].append(f"credentials: {exc}")
+        return result
 
-    sent, dead = 0, []
+    dead = []
     url = SEND_URL.format(project=project)
     for pk, token in tokens:
         payload = build_message(
@@ -151,21 +165,47 @@ def send_to_user(user_id, *, title, body, data, channel, tag="", badge=None, hig
             )
         except requests.RequestException as exc:
             logger.warning("FCM request failed: %s", exc)
+            result["errors"].append(f"network: {exc}")
             continue
         if response.status_code == 200:
-            sent += 1
+            result["sent"] += 1
             continue
         status = _error_status(response)
         if response.status_code == 404 or status in _DEAD_TOKEN_ERRORS:
             dead.append(pk)
+            result["errors"].append(f"device no longer registered ({status or response.status_code})")
         elif response.status_code == 401:
             _reset_credentials()
             logger.warning("FCM rejected the access token; credentials will be reloaded")
+            result["errors"].append("Firebase rejected the server credentials (401)")
         else:
             logger.warning("FCM send failed (%s %s)", response.status_code, status)
+            result["errors"].append(f"Firebase error {response.status_code} {status}".strip())
     if dead:
         DeviceToken.objects.filter(pk__in=dead).delete()
-    return sent
+        result["removed"] = len(dead)
+    return result
+
+
+def send_to_user(user_id, *, title, body, data, channel, tag="", badge=None, high_priority=False) -> int:
+    """Send to every device of ``user_id``. Returns how many deliveries FCM accepted."""
+    return send_to_user_detailed(
+        user_id,
+        title=title,
+        body=body,
+        data=data,
+        channel=channel,
+        tag=tag,
+        badge=badge,
+        high_priority=high_priority,
+    )["sent"]
+
+
+def unread_badge(user_id) -> int:
+    """Number shown on the app icon: unread notifications, messages included."""
+    from .models import Notification
+
+    return Notification.objects.filter(recipient_id=user_id, is_read=False).count()
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +251,7 @@ def dispatch_notification(notification_id) -> int:
         if notification is None or not notification.recipient.is_active:
             return 0
         title, body, channel, tag = _content_for(notification)
-        badge = Notification.objects.filter(recipient_id=notification.recipient_id, is_read=False).count()
+        badge = unread_badge(notification.recipient_id)
         data = {
             "notification_id": notification.pk,
             "type": notification.notification_type,
@@ -219,6 +259,7 @@ def dispatch_notification(notification_id) -> int:
             "reference_id": notification.reference_id,
             "sender_id": notification.sender_id,
             "sender_username": notification.sender.username if notification.sender else None,
+            "badge": badge,
         }
         return send_to_user(
             notification.recipient_id,
