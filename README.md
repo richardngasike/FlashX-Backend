@@ -65,7 +65,7 @@ backend/
     notifications/  activity feed, device tokens, push delivery (FCM)
     search/         search, recent searches, explore and discovery
     reports/        content reports and moderation actions
-  tests/            API test suite (120 tests, runs against PostgreSQL)
+  tests/            API test suite (131 tests, runs against PostgreSQL)
   .env.example      every environment variable, documented
   .env              ready-to-run local configuration (git-ignored)
   vercel.json       region, function timeout, daily cron
@@ -386,7 +386,7 @@ Post `type` is one of `text`, `image`, `carousel`, `video` or `mixed`.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `reels/?feed=for_you\|following&author=&hashtag=` | Use `page_size=5` and fetch the next page near the end |
+| GET | `reels/?feed=for_you\|following&author=&hashtag=&seed=` | For You lists reels you haven't watched first, then ranks by engagement and freshness with a shuffle. Send a new `seed` on every pull-to-refresh for a new mix; the same seed keeps pages stable. Use `page_size=5` and fetch the next page near the end |
 | POST | `reels/` | `media_id, caption, audio_title, comments_enabled` |
 | GET / PATCH / DELETE | `reels/{id}/` | |
 | POST | `reels/{id}/view/` | `watched_seconds`; counted once per user |
@@ -417,6 +417,9 @@ Post `type` is one of `text`, `image`, `carousel`, `video` or `mixed`.
 | GET | `messages/{conversation_id}/info/` | |
 | POST | `messages/{conversation_id}/read/` | |
 | POST | `messages/{conversation_id}/mute/` | `muted: bool` |
+| POST | `messages/{conversation_id}/leave/` | Leave a group. If the admin leaves, the longest-standing member becomes admin. An empty group is deleted |
+| GET / POST | `messages/{conversation_id}/members/` | GET: every member (you included), admin first, each with `is_admin`. POST (admin): `user_ids[]` adds people and returns the ids actually added |
+| DELETE | `messages/{conversation_id}/members/{user_id}/` | Admin removes someone. Removing yourself is the same as leaving |
 | DELETE | `messages/message/{id}/` | Sender only. Soft-deletes the message ("Message deleted") and removes its media |
 | GET | `messages/unread-count/` | |
 
@@ -523,13 +526,13 @@ ALTER ROLE flashx CREATEDB;
 python manage.py test tests --settings=config.settings.test
 ```
 
-The 120 tests cover:
+The 131 tests cover:
 
 - **Accounts:** auth and token rotation, password reset, profile edits and image replacement, the follow graph, blocking in both directions, People you may know.
 - **Media:** upload signing, ownership checks, size/type/duration limits.
 - **Posts:** visibility, feed pagination and query count, likes, saves and shares, comment threading and deletion rights.
-- **Stories and reels:** stories (tray, expiry, reactions, replies, viewers) and reels (distinct views).
-- **Messaging and notifications:** direct and group threads, read receipts, mute, soft delete, notifications, push delivery (FCM payloads, muted threads, dead tokens, rollbacks; FCM is mocked).
+- **Stories and reels:** stories (tray, expiry, reactions, replies, viewers) and reels (distinct views, ranked For You with refresh shuffles).
+- **Messaging and notifications:** direct and group threads, group membership (leave, add, remove, admin handover), read receipts, mute, soft delete, notifications, push delivery (FCM payloads, muted threads, dead tokens, rollbacks; FCM is mocked).
 - **Discovery and moderation:** search and explore, reports and moderation.
 - **Operations:** the cron endpoint and every admin page.
 

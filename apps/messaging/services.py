@@ -207,6 +207,62 @@ def clear_conversation(user, conversation_id):
     m.save(update_fields=["cleared_at", "last_read_at"])
 
 
+def _group_membership(user, conversation_id):
+    m = membership(user, conversation_id)
+    if not m.conversation.is_group:
+        raise ServiceError("This is not a group conversation.", code="not_a_group")
+    return m
+
+
+def _require_admin(m):
+    if m.conversation.created_by_id != m.user_id:
+        raise ServiceError("Only the group admin can do this.", code="permission_denied", status_code=403)
+
+
+@transaction.atomic
+def leave_group(user, conversation_id) -> bool:
+    """Leave a group. The admin role passes to the longest-standing member; an empty group is deleted."""
+    m = _group_membership(user, conversation_id)
+    convo = m.conversation
+    m.delete()
+    remaining = ConversationParticipant.objects.filter(conversation=convo).order_by("joined_at", "id")
+    if not remaining.exists():
+        convo.delete()
+        return True
+    if convo.created_by_id == user.pk or convo.created_by_id is None:
+        convo.created_by_id = remaining.first().user_id
+        convo.save(update_fields=["created_by", "updated_at"])
+    return True
+
+
+@transaction.atomic
+def add_group_members(user, conversation_id, user_ids) -> list:
+    """Admin adds people. Returns the ids actually added (existing members and blocked users are skipped)."""
+    m = _group_membership(user, conversation_id)
+    _require_admin(m)
+    convo = m.conversation
+    current = set(ConversationParticipant.objects.filter(conversation=convo).values_list("user_id", flat=True))
+    wanted = {int(i) for i in user_ids} - current - hidden_user_ids(user)
+    if len(current) + len(wanted) > MAX_GROUP_SIZE:
+        raise ServiceError(f"Groups are limited to {MAX_GROUP_SIZE} people.", code="group_too_large")
+    users = list(User.objects.filter(pk__in=wanted, is_active=True))
+    ConversationParticipant.objects.bulk_create(
+        [ConversationParticipant(conversation=convo, user=u, last_read_at=timezone.now()) for u in users],
+        ignore_conflicts=True,
+    )
+    return [u.pk for u in users]
+
+
+@transaction.atomic
+def remove_group_member(user, conversation_id, member_id) -> bool:
+    m = _group_membership(user, conversation_id)
+    if int(member_id) == user.pk:
+        return leave_group(user, conversation_id)
+    _require_admin(m)
+    deleted, _ = ConversationParticipant.objects.filter(conversation=m.conversation, user_id=member_id).delete()
+    return bool(deleted)
+
+
 def set_muted(user, conversation_id, muted: bool):
     m = membership(user, conversation_id)
     m.is_muted = muted

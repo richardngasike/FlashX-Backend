@@ -98,3 +98,76 @@ class MessagingTests(FlashXTestCase):
         self.auth(self.me)
         self.send(conversation_id=convo, content="muted?")
         self.assertEqual(Notification.objects.filter(recipient=self.kelvin).count(), before)
+
+
+class GroupManagementTests(FlashXTestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.messaging.services import create_group
+
+        self.admin = self.make_user("group_admin")
+        self.a = self.make_user("member_a")
+        self.b = self.make_user("member_b")
+        self.convo = create_group(self.admin, [self.a.pk, self.b.pk], "Weekend")
+
+    def members(self, user):
+        self.auth(user)
+        return self.assertOk(self.client.get(reverse("messages-members", args=[self.convo.pk])))
+
+    def test_members_list_admin_first_and_flags(self):
+        data = self.members(self.a)
+        self.assertEqual(data["admin_id"], self.admin.pk)
+        self.assertEqual(data["results"][0]["id"], self.admin.pk)
+        self.assertTrue(data["results"][0]["is_admin"])
+        self.assertEqual(len(data["results"]), 3)
+        info = self.assertOk(self.client.get(reverse("messages-info", args=[self.convo.pk])))
+        self.assertEqual((info["member_count"], info["is_admin"], info["admin_id"]), (3, False, self.admin.pk))
+
+    def test_member_leaves(self):
+        self.auth(self.a)
+        self.assertOk(self.client.post(reverse("messages-leave", args=[self.convo.pk])), 204)
+        self.assertError(self.client.get(reverse("messages-info", args=[self.convo.pk])), 404)
+        self.assertEqual(len(self.members(self.b)["results"]), 2)
+
+    def test_admin_leaving_hands_over_admin(self):
+        self.auth(self.admin)
+        self.client.post(reverse("messages-leave", args=[self.convo.pk]))
+        self.convo.refresh_from_db()
+        self.assertIn(self.convo.created_by_id, {self.a.pk, self.b.pk})
+
+    def test_last_member_leaving_deletes_group(self):
+        from apps.messaging.models import Conversation
+
+        for user in (self.admin, self.a, self.b):
+            self.auth(user)
+            self.client.post(reverse("messages-leave", args=[self.convo.pk]))
+        self.assertFalse(Conversation.objects.filter(pk=self.convo.pk).exists())
+
+    def test_admin_adds_and_removes(self):
+        c = self.make_user("member_c")
+        self.auth(self.admin)
+        added = self.assertOk(
+            self.client.post(
+                reverse("messages-members", args=[self.convo.pk]), {"user_ids": [c.pk, self.a.pk]}, format="json"
+            ),
+            201,
+        )
+        self.assertEqual(added["added"], [c.pk])
+        self.assertOk(self.client.delete(reverse("messages-member-detail", args=[self.convo.pk, c.pk])), 204)
+        self.assertEqual(len(self.members(self.admin)["results"]), 3)
+
+    def test_non_admin_cannot_add_or_remove(self):
+        c = self.make_user()
+        self.auth(self.a)
+        self.assertError(
+            self.client.post(reverse("messages-members", args=[self.convo.pk]), {"user_ids": [c.pk]}, format="json"),
+            403,
+        )
+        self.assertError(self.client.delete(reverse("messages-member-detail", args=[self.convo.pk, self.b.pk])), 403)
+
+    def test_cannot_leave_direct_thread(self):
+        from apps.messaging.services import get_or_create_direct
+
+        direct = get_or_create_direct(self.a, self.b)
+        self.auth(self.a)
+        self.assertError(self.client.post(reverse("messages-leave", args=[direct.pk])), 400, "not_a_group")

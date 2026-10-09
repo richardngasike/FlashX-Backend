@@ -123,3 +123,44 @@ class ReelTests(FlashXTestCase):
         self.destroy.assert_called_once()
         self.me.refresh_from_db()
         self.assertEqual(self.me.reels_count, 0)
+
+
+class ForYouReelsTests(FlashXTestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.reels.services import create_reel
+
+        self.me = self.auth(self.make_user("viewer"))
+        self.creator = self.make_user("creator")
+        self.reels = [
+            create_reel(self.creator, media_id=self.make_asset(self.creator, "reel", "video").pk) for _ in range(6)
+        ]
+
+    def ids(self, **params):
+        return [r["id"] for r in self.assertOk(self.client.get(reverse("reels-list"), params))["results"]]
+
+    def test_unseen_reels_come_first(self):
+        from apps.reels.models import ReelView
+
+        watched = self.reels[0]
+        ReelView.objects.create(reel=watched, user=self.me)
+        ids = self.ids(seed="s1")
+        self.assertEqual(ids[-1], watched.pk)
+        self.assertEqual(set(ids), {r.pk for r in self.reels})
+
+    def test_same_seed_is_stable_and_pages_do_not_overlap(self):
+        self.assertEqual(self.ids(seed="abc"), self.ids(seed="abc"))
+        first = self.assertOk(self.client.get(reverse("reels-list"), {"seed": "abc", "page_size": 3}))
+        second = self.assertOk(self.client.get(first["next"]))
+        a, b = [r["id"] for r in first["results"]], [r["id"] for r in second["results"]]
+        self.assertEqual(len(a), 3)
+        self.assertFalse(set(a) & set(b))
+        self.assertIsNone(second["next"])
+
+    def test_new_seed_reshuffles(self):
+        orders = {tuple(self.ids(seed=f"refresh-{i}")) for i in range(8)}
+        self.assertGreater(len(orders), 1)
+
+    def test_following_and_author_feeds_keep_cursor_pagination(self):
+        data = self.assertOk(self.client.get(reverse("reels-list"), {"author": self.creator.pk}))
+        self.assertEqual(len(data["results"]), 6)

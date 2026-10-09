@@ -129,6 +129,9 @@ class ConversationSerializer(serializers.Serializer):
     unread_count = serializers.IntegerField(default=0)
     is_muted = serializers.BooleanField(default=False)
     is_blocked = serializers.SerializerMethodField()
+    admin_id = serializers.IntegerField(source="created_by_id", allow_null=True)
+    is_admin = serializers.SerializerMethodField()
+    member_count = serializers.SerializerMethodField()
     last_message_at = serializers.DateTimeField()
     created_at = serializers.DateTimeField()
 
@@ -146,6 +149,12 @@ class ConversationSerializer(serializers.Serializer):
             self.context["_hidden_user_ids"] = hidden_user_ids(self.context["request"].user)
         hidden = self.context["_hidden_user_ids"]
         return any(u.pk in hidden for u in self._others(obj))
+
+    def get_is_admin(self, obj) -> bool:
+        return obj.is_group and obj.created_by_id == self.context["request"].user.pk
+
+    def get_member_count(self, obj) -> int:
+        return len(obj.memberships.all())
 
     def get_title(self, obj) -> str:
         if obj.title:
@@ -216,3 +225,7 @@ class StartConversationSerializer(serializers.Serializer):
 
 class MuteSerializer(serializers.Serializer):
     muted = serializers.BooleanField()
+
+
+class GroupMembersSerializer(serializers.Serializer):
+    user_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), min_length=1, max_length=31)

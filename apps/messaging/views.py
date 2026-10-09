@@ -13,6 +13,7 @@ from . import selectors, services
 from .models import ConversationParticipant, Message
 from .serializers import (
     ConversationSerializer,
+    GroupMembersSerializer,
     MessageSerializer,
     MuteSerializer,
     SendMessageSerializer,
@@ -169,3 +170,52 @@ class UnreadCountView(APIView):
 
     def get(self, request):
         return Response({"unread_conversations": services.unread_conversations_count(request.user)})
+
+
+class LeaveGroupView(APIView):
+    """POST /api/messages/{id}/leave/ — leave a group conversation."""
+
+    serializer_class = ConversationSerializer
+
+    def post(self, request, conversation_id):
+        services.leave_group(request.user, conversation_id)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class GroupMembersView(APIView):
+    """
+    GET  /api/messages/{id}/members/  every member (you included), admin first
+    POST /api/messages/{id}/members/  admin adds people: {"user_ids": [..]}
+    """
+
+    serializer_class = GroupMembersSerializer
+
+    def get(self, request, conversation_id):
+        m = services.membership(request.user, conversation_id)
+        convo = m.conversation
+        from apps.users.selectors import with_follow_flags
+        from apps.users.serializers import UserListSerializer
+
+        member_ids = ConversationParticipant.objects.filter(conversation=convo).values("user_id")
+        users = list(with_follow_flags(selectors.base_users().filter(pk__in=member_ids), request.user))
+        users.sort(key=lambda u: (u.pk != convo.created_by_id, u.pk != request.user.pk, u.full_name.lower()))
+        data = UserListSerializer(users, many=True, context={"request": request}).data
+        for row in data:
+            row["is_admin"] = row["id"] == convo.created_by_id
+        return Response({"results": data, "admin_id": convo.created_by_id, "is_group": convo.is_group})
+
+    def post(self, request, conversation_id):
+        s = GroupMembersSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        added = services.add_group_members(request.user, conversation_id, s.validated_data["user_ids"])
+        return Response({"added": added}, status=status.HTTP_201_CREATED)
+
+
+class GroupMemberDetailView(APIView):
+    """DELETE /api/messages/{id}/members/{user_id}/ — admin removes someone (or you remove yourself)."""
+
+    serializer_class = GroupMembersSerializer
+
+    def delete(self, request, conversation_id, user_id):
+        services.remove_group_member(request.user, conversation_id, user_id)
+        return Response(status=status.HTTP_204_NO_CONTENT)

@@ -5,7 +5,7 @@ from rest_framework.viewsets import GenericViewSet
 
 from apps.core.engagement import EngagementMixin
 from apps.core.exceptions import ServiceError
-from apps.core.pagination import FeedCursorPagination
+from apps.core.pagination import FeedCursorPagination, RankedFeedPagination
 from apps.core.throttles import ContentCreateThrottle
 from apps.follows.models import Follow
 
@@ -24,12 +24,32 @@ class ReelViewSet(EngagementMixin, mixins.ListModelMixin, mixins.RetrieveModelMi
     serializer_class = ReelSerializer
     pagination_class = FeedCursorPagination
 
+    def _is_for_you(self):
+        params = self.request.query_params
+        return (
+            self.action == "list"
+            and params.get("feed", "for_you") == "for_you"
+            and not params.get("author")
+            and not params.get("hashtag")
+        )
+
+    @property
+    def paginator(self):
+        if not hasattr(self, "_paginator"):
+            self._paginator = RankedFeedPagination() if self._is_for_you() else FeedCursorPagination()
+        return self._paginator
+
     def get_throttles(self):
         if self.action == "create":
             return [ContentCreateThrottle()]
         return super().get_throttles()
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return selectors.visible_reels()
+        if self._is_for_you():
+            seed = self.request.query_params.get("seed")
+            return selectors.with_relations(selectors.for_you(self.request.user, seed), self.request.user)
         qs = selectors.visible_reels(self.request.user)
         params = self.request.query_params
         if self.action == "list":
