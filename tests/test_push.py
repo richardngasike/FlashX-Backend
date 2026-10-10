@@ -59,7 +59,13 @@ class PushDispatchTests(FlashXTestCase):
         self.post = mock.patch("requests.post", return_value=FakeResponse()).start()
 
     def sent_messages(self):
-        return [c.kwargs["json"]["message"] for c in self.post.call_args_list]
+        """Visible notifications only (silent sync data messages are checked separately)."""
+        messages = [c.kwargs["json"]["message"] for c in self.post.call_args_list]
+        return [m for m in messages if "notification" in m]
+
+    def sync_messages(self):
+        messages = [c.kwargs["json"]["message"] for c in self.post.call_args_list]
+        return [m for m in messages if "sync" in m.get("data", {})]
 
     def test_activity_notification_is_pushed_after_commit(self):
         post = self.make_post(self.alice)
@@ -93,7 +99,11 @@ class PushDispatchTests(FlashXTestCase):
         set_muted(self.alice, convo.pk, True)
         with self.captureOnCommitCallbacks(execute=True):
             send_message(self.bob, convo, content="quiet")
-        self.post.assert_not_called()
+        self.assertEqual(self.sent_messages(), [])
+        # The open chat still refreshes: one silent sync event, no alert.
+        (sync_msg,) = self.sync_messages()
+        self.assertEqual(sync_msg["data"]["sync"], "message")
+        self.assertNotIn("notification", sync_msg)
 
     def test_dead_token_is_removed(self):
         self.post.return_value = FakeResponse(404, {"error": {"status": "NOT_FOUND"}})

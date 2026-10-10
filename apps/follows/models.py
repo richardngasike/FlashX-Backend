@@ -17,3 +17,16 @@ class Follow(models.Model):
 
     def __str__(self):
         return f"{self.follower_id} -> {self.following_id}"
+
+
+class FollowRequest(models.Model):
+    """Pending follow of a private account. Approving turns it into a Follow."""
+
+    requester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    target = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="follow_requests")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        constraints = [models.UniqueConstraint(fields=["requester", "target"], name="follow_request_unique")]
+        indexes = [models.Index(fields=["target", "-created_at"])]

@@ -12,16 +12,19 @@ from .models import Post, PostMedia, Visibility
 def visible_posts(viewer):
     qs = Post.objects.filter(is_hidden=False, author__is_active=True)
     if not viewer or not viewer.is_authenticated:
-        return qs.filter(visibility=Visibility.PUBLIC)
+        return qs.filter(visibility=Visibility.PUBLIC, author__is_private=False)
     following = Follow.objects.filter(follower=viewer).values("following_id")
+    # Private accounts: every post is followers-only.
     qs = qs.filter(
-        Q(visibility=Visibility.PUBLIC) | Q(author=viewer) | Q(visibility=Visibility.FOLLOWERS, author_id__in=following)
+        Q(visibility=Visibility.PUBLIC, author__is_private=False)
+        | Q(author=viewer)
+        | Q(visibility__in=[Visibility.PUBLIC, Visibility.FOLLOWERS], author_id__in=following)
     )
     return exclude_blocked(qs, viewer, "author_id")
 
 
 def with_relations(qs, viewer):
-    qs = qs.select_related("author__profile_image", "category").prefetch_related(
+    qs = qs.select_related("author__profile_image", "category", "sound").prefetch_related(
         Prefetch("media", queryset=PostMedia.objects.order_by("order")),
         Prefetch("tagged_users", queryset=base_users()),
         "hashtags",

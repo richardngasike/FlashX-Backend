@@ -49,8 +49,10 @@ class BlockTests(FlashXTestCase):
     def test_follow_is_refused_either_direction(self):
         self.block()
         self.assertError(self.client.post(reverse("users-follow", args=[self.other.pk])), 403, "blocked")
+        # The blocked person gets the same answer as for a missing account.
         self.auth(self.other)
-        self.assertError(self.client.post(reverse("users-follow", args=[self.me.pk])), 403, "blocked")
+        err = self.assertError(self.client.post(reverse("users-follow", args=[self.me.pk])), 404, "user_unavailable")
+        self.assertNotIn("block", err["message"].lower())
 
     def test_profile_visibility(self):
         self.block()
@@ -105,12 +107,18 @@ class BlockTests(FlashXTestCase):
         )
         info = self.assertOk(self.client.get(reverse("messages-info", args=[convo.pk])))
         self.assertTrue(info["is_blocked"])
+        self.assertFalse(info["can_message"])
+        # The blocked side is never told: no is_blocked flag, a generic "unavailable" error.
         self.auth(self.other)
-        self.assertError(
+        info = self.assertOk(self.client.get(reverse("messages-info", args=[convo.pk])))
+        self.assertFalse(info["is_blocked"])
+        self.assertFalse(info["can_message"])
+        err = self.assertError(
             self.client.post(reverse("messages-conversations"), {"conversation_id": str(convo.pk), "content": "hi"}),
-            403,
-            "blocked",
+            404,
+            "user_unavailable",
         )
+        self.assertNotIn("block", err["message"].lower())
 
     def test_no_notifications_between_blocked_users(self):
         post = self.make_post(self.me)

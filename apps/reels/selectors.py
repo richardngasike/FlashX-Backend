@@ -1,6 +1,6 @@
 import hashlib
 
-from django.db.models import Exists, OuterRef, Value
+from django.db.models import Exists, OuterRef, Q, Value
 from django.db.models.expressions import RawSQL
 from django.utils import timezone
 
@@ -14,11 +14,15 @@ from .models import Reel
 
 def visible_reels(viewer=None):
     qs = Reel.objects.filter(is_hidden=False, author__is_active=True)
+    if not viewer or not viewer.is_authenticated:
+        return qs.filter(author__is_private=False)
+    following = Follow.objects.filter(follower=viewer).values("following_id")
+    qs = qs.filter(Q(author__is_private=False) | Q(author=viewer) | Q(author_id__in=following))
     return exclude_blocked(qs, viewer, "author_id")
 
 
 def with_relations(qs, viewer):
-    qs = qs.select_related("author__profile_image").prefetch_related("hashtags")
+    qs = qs.select_related("author__profile_image", "sound").prefetch_related("hashtags")
     if not viewer or not viewer.is_authenticated:
         return qs.annotate(is_liked=Value(False), is_saved=Value(False), author_is_following=Value(False))
     return qs.annotate(

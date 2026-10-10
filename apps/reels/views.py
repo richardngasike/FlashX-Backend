@@ -80,7 +80,7 @@ class ReelViewSet(EngagementMixin, mixins.ListModelMixin, mixins.RetrieveModelMi
         self._require_owner(reel)
         s = ReelUpdateSerializer(data=request.data, partial=True)
         s.is_valid(raise_exception=True)
-        services.update_reel(reel, s.validated_data)
+        services.update_reel(reel, s.validated_data, actor=request.user)
         return self._serialize(reel.pk)
 
     def update(self, request, pk=None):

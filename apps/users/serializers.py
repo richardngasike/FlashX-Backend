@@ -17,6 +17,9 @@ def avatar_payload(asset):
     return {
         "url": cld.image_url(asset.public_id, 400, 400, crop="fill", gravity="face"),
         "thumbnail": cld.image_url(asset.public_id, 120, 120, crop="fill", gravity="face"),
+        # Full size for the image viewer and downloads.
+        "large": cld.image_url(asset.public_id, 1440, 1440),
+        "original": cld.original_url(asset.public_id, "image"),
     }
 
 
@@ -26,22 +29,43 @@ def cover_payload(asset):
     return {
         "url": cld.image_url(asset.public_id, 1500, 600, crop="fill", gravity="auto"),
         "thumbnail": cld.image_url(asset.public_id, 600, 240, crop="fill", gravity="auto"),
+        "large": cld.image_url(asset.public_id, 2400),
+        "original": cld.original_url(asset.public_id, "image"),
     }
+
+
+def _viewer(context):
+    request = context.get("request") if context else None
+    user = getattr(request, "user", None)
+    return user if user is not None and user.is_authenticated else None
 
 
 class UserSummarySerializer(serializers.ModelSerializer):
     """Compact user shape embedded in posts, comments, messages, etc."""
 
     avatar = serializers.SerializerMethodField()
-    is_online = serializers.BooleanField(read_only=True)
+    is_online = serializers.SerializerMethodField()
+    last_seen_at = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ("id", "username", "full_name", "avatar", "is_verified", "is_online")
+        fields = ("id", "username", "full_name", "avatar", "is_verified", "is_online", "last_seen_at")
         read_only_fields = fields
 
     def get_avatar(self, obj) -> dict | None:
         return avatar_payload(obj.profile_image)
+
+    def _activity_visible(self, obj) -> bool:
+        return obj.activity_visible_to(_viewer(self.context))
+
+    def get_is_online(self, obj) -> bool:
+        return self._activity_visible(obj) and obj.is_online
+
+    def get_last_seen_at(self, obj):
+        """Hidden (null) when either person turned off activity status."""
+        if not self._activity_visible(obj) or not obj.last_seen_at:
+            return None
+        return serializers.DateTimeField().to_representation(obj.last_seen_at)
 
 
 class UserWithFollowStateSerializer(UserSummarySerializer):
@@ -97,6 +121,9 @@ class UserProfileSerializer(UserListSerializer):
     cover = serializers.SerializerMethodField()
     is_me = serializers.SerializerMethodField()
     is_blocked = serializers.SerializerMethodField()
+    follow_status = serializers.SerializerMethodField()
+    can_view_content = serializers.SerializerMethodField()
+    can_call = serializers.SerializerMethodField()
 
     class Meta(UserListSerializer.Meta):
         fields = UserListSerializer.Meta.fields + (
@@ -106,12 +133,36 @@ class UserProfileSerializer(UserListSerializer):
             "following_count",
             "posts_count",
             "reels_count",
-            "last_seen_at",
             "created_at",
             "is_me",
             "is_blocked",
+            "is_private",
+            "follow_status",
+            "can_view_content",
+            "can_call",
         )
         read_only_fields = fields
+
+    def get_follow_status(self, obj) -> str:
+        """following | requested | none"""
+        if getattr(obj, "is_following", False):
+            return "following"
+        return "requested" if getattr(obj, "is_requested", False) else "none"
+
+    def get_can_view_content(self, obj) -> bool:
+        viewer = _viewer(self.context)
+        return (
+            not obj.is_private
+            or (viewer is not None and viewer.pk == obj.pk)
+            or bool(getattr(obj, "is_following", False))
+        )
+
+    def get_can_call(self, obj) -> bool:
+        """Calls are open between people who follow each other."""
+        viewer = _viewer(self.context)
+        if viewer is None or viewer.pk == obj.pk or not obj.allow_calls:
+            return False
+        return bool(getattr(obj, "is_following", False) and getattr(obj, "follows_you", False))
 
     def get_cover(self, obj) -> dict | None:
         return cover_payload(obj.cover_image)
@@ -126,7 +177,13 @@ class UserProfileSerializer(UserListSerializer):
 
 class MeSerializer(UserProfileSerializer):
     class Meta(UserProfileSerializer.Meta):
-        fields = UserProfileSerializer.Meta.fields + ("email", "date_joined")
+        fields = UserProfileSerializer.Meta.fields + (
+            "email",
+            "date_joined",
+            "show_activity_status",
+            "allow_calls",
+            "notification_prefs",
+        )
         read_only_fields = fields
 
 
@@ -136,8 +193,42 @@ class UpdateMeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ("full_name", "username", "bio", "website", "location", "profile_image_id", "cover_image_id")
+        fields = (
+            "full_name",
+            "username",
+            "bio",
+            "website",
+            "location",
+            "profile_image_id",
+            "cover_image_id",
+            "show_activity_status",
+            "is_private",
+            "allow_calls",
+            "notification_prefs",
+        )
         extra_kwargs = {"username": {"validators": []}, "full_name": {"required": False}}
+
+    NOTIFICATION_SWITCHES = (
+        "pause_all",
+        "likes",
+        "comments",
+        "mentions",
+        "follows",
+        "messages",
+        "stories",
+        "live",
+        "calls",
+    )
+
+    def validate_notification_prefs(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Expected an object of on/off switches.")
+        unknown = set(value) - set(self.NOTIFICATION_SWITCHES)
+        if unknown:
+            raise serializers.ValidationError(f"Unknown switches: {', '.join(sorted(unknown))}.")
+        merged = dict(self.instance.notification_prefs or {}) if self.instance else {}
+        merged.update({k: bool(v) for k, v in value.items()})
+        return merged
 
     def validate_username(self, value):
         value = value.strip()
@@ -170,6 +261,10 @@ class UpdateMeSerializer(serializers.ModelSerializer):
             instance.save(update_fields=[attr, "updated_at"])
             release_asset(old_id)
         return super().update(instance, validated_data)
+
+
+class PresenceSerializer(serializers.Serializer):
+    state = serializers.ChoiceField(choices=["online", "offline"])
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -243,6 +338,12 @@ class PasswordResetRequestSerializer(serializers.Serializer):
 class PasswordResetConfirmSerializer(serializers.Serializer):
     uid = serializers.CharField()
     token = serializers.CharField()
+    new_password = serializers.CharField(trim_whitespace=False)
+
+
+class PasswordResetCodeSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    code = serializers.RegexField(r"^\d{6}$", error_messages={"invalid": "Enter the 6-digit code from the email."})
     new_password = serializers.CharField(trim_whitespace=False)
 
 

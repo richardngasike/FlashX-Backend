@@ -50,6 +50,10 @@ LOCAL_APPS = [
     "apps.notifications",
     "apps.search",
     "apps.reports",
+    "apps.ads",
+    "apps.music",
+    "apps.live",
+    "apps.calls",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -213,7 +217,7 @@ FLASHX_MEDIA_LIMITS = {
 
 FLASHX = {
     "STORY_LIFETIME_HOURS": config("STORY_LIFETIME_HOURS", default=24, cast=int),
-    "ONLINE_WINDOW_SECONDS": config("ONLINE_WINDOW_SECONDS", default=300, cast=int),
+    "ONLINE_WINDOW_SECONDS": config("ONLINE_WINDOW_SECONDS", default=150, cast=int),
     "LAST_SEEN_UPDATE_INTERVAL_SECONDS": 60,
     "REPORT_AUTO_HIDE_THRESHOLD": config("REPORT_AUTO_HIDE_THRESHOLD", default=0, cast=int),
     "PASSWORD_RESET_URL": config("PASSWORD_RESET_URL", default="flashx://reset-password?uid={uid}&token={token}"),
@@ -230,6 +234,26 @@ CRON_SECRET = config("CRON_SECRET", default="")
 # Push notifications (Firebase Cloud Messaging). Empty key = push off.
 # ---------------------------------------------------------------------------
 FCM = {"SERVICE_ACCOUNT_JSON": config("FCM_SERVICE_ACCOUNT_JSON", default="")}
+
+# ---------------------------------------------------------------------------
+# Music for posts and reels (Jamendo, Creative Commons). Empty client id = only
+# original FlashX sounds are offered. Sponsored posts make FlashX a commercial
+# app, so NonCommercial tracks are excluded while COMMERCIAL_USE is on and the
+# Jamendo API must be used under a commercial agreement with Jamendo.
+# ---------------------------------------------------------------------------
+MUSIC = {
+    "JAMENDO_CLIENT_ID": config("JAMENDO_CLIENT_ID", default=""),
+    "COMMERCIAL_USE": config("MUSIC_COMMERCIAL_USE", default=True, cast=bool),
+}
+
+# ---------------------------------------------------------------------------
+# Live video (LiveKit Cloud or self-hosted). Empty values = live is off.
+# ---------------------------------------------------------------------------
+LIVEKIT = {
+    "URL": config("LIVEKIT_URL", default=""),
+    "API_KEY": config("LIVEKIT_API_KEY", default=""),
+    "API_SECRET": config("LIVEKIT_API_SECRET", default=""),
+}
 
 # ---------------------------------------------------------------------------
 # Email (password reset)

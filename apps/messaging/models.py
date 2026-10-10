@@ -14,6 +14,7 @@ class Conversation(models.Model):
     participants = models.ManyToManyField(
         settings.AUTH_USER_MODEL, through="ConversationParticipant", related_name="conversations"
     )
+    image = models.ForeignKey("media.MediaAsset", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
     last_message_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -51,6 +52,10 @@ class Message(models.Model):
         IMAGE = "image", "Image"
         VIDEO = "video", "Video"
 
+    class Kind(models.TextChoices):
+        USER = "user", "Message"
+        SYSTEM = "system", "Group event"
+
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="messages")
     sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sent_messages")
     content = models.TextField(max_length=4000, blank=True)
@@ -71,6 +76,9 @@ class Message(models.Model):
         related_name="+",
         help_text="Set when the message is a reply to a story.",
     )
+    kind = models.CharField(max_length=8, choices=Kind.choices, default=Kind.USER)
+    # Group events: {"event": "created|added|removed|left|renamed|photo", "user_ids": [...], "title": "..."}
+    meta = models.JSONField(null=True, blank=True)
     is_read = models.BooleanField(default=False)
     is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
@@ -85,3 +93,15 @@ class Message(models.Model):
 
     def __str__(self):
         return f"Message {self.pk}"
+
+
+class MessageHidden(models.Model):
+    """A message removed with Delete for Me. It stays visible to everyone else."""
+
+    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="hidden_for")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["message", "user"], name="message_hidden_unique")]
+        indexes = [models.Index(fields=["user", "message"])]

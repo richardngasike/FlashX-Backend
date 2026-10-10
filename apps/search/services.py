@@ -110,3 +110,15 @@ def trending_reels(viewer, days=7, limit=10):
         .annotate(score=engagement_score() + F("views") / 10)
     )
     return reel_selectors.with_relations(qs, viewer).order_by("-score", "-created_at")[:limit]
+
+
+def search_sounds(viewer, q):
+    """Sounds already used on FlashX (catalogue songs and original sounds), most used first."""
+    from apps.blocks.selectors import exclude_blocked
+    from apps.music.models import Sound
+
+    qs = Sound.objects.filter(is_active=True, source__in=[Sound.Source.JAMENDO, Sound.Source.FLASHX]).filter(
+        Q(title__icontains=q) | Q(artist__icontains=q) | Q(owner__username__icontains=q)
+    )
+    qs = qs.filter(Q(owner__isnull=True) | Q(owner__is_active=True, owner__is_private=False))
+    return exclude_blocked(qs, viewer, "owner_id").order_by("-uses_count", "-created_at")

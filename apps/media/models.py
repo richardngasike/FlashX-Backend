@@ -9,6 +9,7 @@ class MediaPurpose(models.TextChoices):
     STORY = "story", "Story media"
     REEL = "reel", "Reel video"
     MESSAGE = "message", "Message attachment"
+    GROUP = "group", "Group photo"
 
 
 class ResourceType(models.TextChoices):
@@ -24,6 +25,7 @@ PURPOSE_RESOURCE_TYPES = {
     MediaPurpose.STORY: {ResourceType.IMAGE, ResourceType.VIDEO},
     MediaPurpose.REEL: {ResourceType.VIDEO},
     MediaPurpose.MESSAGE: {ResourceType.IMAGE, ResourceType.VIDEO},
+    MediaPurpose.GROUP: {ResourceType.IMAGE},
 }
 
 

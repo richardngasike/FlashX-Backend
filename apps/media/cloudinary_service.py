@@ -211,6 +211,16 @@ def video_poster_url(public_id, width=720):
     return _build(public_id, "video", format="jpg", start_offset="0", width=width, crop="limit", quality="auto")
 
 
+def audio_url(public_id):
+    """The soundtrack of an uploaded video as MP3 (used for reusable "original sounds")."""
+    return _build(public_id, "video", format="mp3", audio_codec="mp3", bit_rate="128k")
+
+
+def original_url(public_id, resource_type):
+    """The file as uploaded, without resizing or recompression (used for downloads)."""
+    return _build(public_id, resource_type)
+
+
 def variants(public_id, resource_type):
     """URL set the Flutter client uses for responsive delivery."""
     if not public_id:
@@ -221,9 +231,11 @@ def variants(public_id, resource_type):
             "url_sd": video_url(public_id, width=540),
             "poster": video_poster_url(public_id),
             "thumbnail": video_poster_url(public_id, width=360),
+            "original": original_url(public_id, "video"),
         }
     return {
         "url": image_url(public_id, width=1440),
         "medium": image_url(public_id, width=720),
         "thumbnail": image_url(public_id, width=360, height=360, crop="fill", gravity="auto"),
+        "original": original_url(public_id, "image"),
     }

@@ -4,6 +4,7 @@ from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 from apps.blocks.views import BlockedUsersView
+from apps.core import share
 from apps.core.cron import MaintenanceCronView
 from apps.core.views import HealthView
 from apps.posts.views import LikedPostsView
@@ -32,11 +33,18 @@ api = [
     path("search/", include(search_urlpatterns)),
     path("explore/", include(explore_urlpatterns)),
     path("reports/", include("apps.reports.urls")),
+    path("ads/", include("apps.ads.urls")),
+    path("music/", include("apps.music.urls")),
+    path("live/", include("apps.live.urls")),
+    path("calls/", include("apps.calls.urls")),
 ]
 
 urlpatterns = [
     path(settings.ADMIN_URL, admin.site.urls),
     path("api/", include(api)),
+    path("p/<int:pk>/", share.share_post, name="share-post"),
+    path("r/<int:pk>/", share.share_reel, name="share-reel"),
+    path("u/<str:username>/", share.share_user, name="share-user"),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="api-docs"),
 ]

@@ -11,6 +11,12 @@ class Reel(models.Model):
     cloudinary_public_id = models.CharField(max_length=255)
     caption = models.TextField(max_length=2200, blank=True)
     audio_title = models.CharField(max_length=120, blank=True, help_text="Soundtrack label shown on the reel.")
+    sound = models.ForeignKey("music.Sound", null=True, blank=True, on_delete=models.SET_NULL, related_name="reels")
+    # Where the song starts (seconds) and the mix of song and the video's own audio (0 to 1).
+    sound_start = models.FloatField(default=0)
+    sound_volume = models.FloatField(default=1)
+    original_volume = models.FloatField(default=1)
+    allow_sound_reuse = models.BooleanField(default=True, help_text="Others may use this video's original sound.")
     duration = models.FloatField(null=True, blank=True)
     width = models.PositiveIntegerField(null=True, blank=True)
     height = models.PositiveIntegerField(null=True, blank=True)

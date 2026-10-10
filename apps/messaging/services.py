@@ -2,18 +2,62 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from apps.blocks.selectors import hidden_user_ids, is_blocked_between
+from apps.blocks.selectors import hidden_user_ids
 from apps.blocks.services import ensure_not_blocked
 from apps.core.exceptions import ServiceError
 from apps.media.models import MediaPurpose
 from apps.media.services import claim_one, release_asset
+from apps.notifications import sync
 from apps.notifications.models import Notification, NotificationType, TargetType
 from apps.notifications.services import notify
 
-from .models import Conversation, ConversationParticipant, Message
+from .models import Conversation, ConversationParticipant, Message, MessageHidden
 
 User = get_user_model()
 MAX_GROUP_SIZE = 32
+
+
+def member_ids(conversation) -> list:
+    return list(ConversationParticipant.objects.filter(conversation=conversation).values_list("user_id", flat=True))
+
+
+def _sync(conversation, event, *, extra_ids=(), exclude=None, **data):
+    ids = set(member_ids(conversation)) | set(extra_ids)
+    if exclude is not None:
+        ids.discard(exclude)
+    sync.emit(ids, event, conversation_id=str(conversation.pk), collapse_key=f"{event}:{conversation.pk}", **data)
+
+
+def _display(user) -> str:
+    return (user.full_name or "").strip().split(" ")[0] or user.username
+
+
+def system_event(conversation, actor, event, *, users=(), title=""):
+    """
+    Record a group event ("X created the group", "X added Y") as a message so
+    it shows in the thread, moves the group to the top of everyone's list, and
+    gives empty groups a last-message preview.
+    """
+    names = [_display(u) for u in users]
+    texts = {
+        "created": f'created the group "{conversation.title}"' if conversation.title else "created the group",
+        "added": "added " + ", ".join(names),
+        "removed": "removed " + ", ".join(names),
+        "left": "left the group",
+        "renamed": f'changed the group name to "{title}"',
+        "photo": "changed the group photo",
+        "photo_removed": "removed the group photo",
+    }
+    msg = Message.objects.create(
+        conversation=conversation,
+        sender=actor,
+        kind=Message.Kind.SYSTEM,
+        content=texts[event],
+        meta={"event": event, "user_ids": [u.pk for u in users], "title": title},
+    )
+    Conversation.objects.filter(pk=conversation.pk).update(last_message_at=msg.created_at, updated_at=msg.created_at)
+    ConversationParticipant.objects.filter(conversation=conversation, user=actor).update(last_read_at=msg.created_at)
+    return msg
 
 
 def _active_user(user_id):
@@ -26,7 +70,7 @@ def _active_user(user_id):
 def get_or_create_direct(user, other) -> Conversation:
     if user.pk == other.pk:
         raise ServiceError("You cannot message yourself.", code="self_message")
-    ensure_not_blocked(user, other, "You can't message this account.")
+    ensure_not_blocked(user, other, "Unblock this account to message it.")
     key = Conversation.make_direct_key(user.pk, other.pk)
     convo = Conversation.objects.filter(direct_key=key).first()
     if convo:
@@ -55,10 +99,52 @@ def create_group(user, participant_ids, title="") -> Conversation:
     users = list(User.objects.filter(pk__in=ids, is_active=True).exclude(pk__in=hidden_user_ids(user)))
     if len(users) != len(ids):
         raise ServiceError("One or more people are unavailable.", code="user_unavailable")
-    convo = Conversation.objects.create(is_group=True, title=(title or "").strip()[:80], created_by=user)
+    convo = Conversation.objects.create(
+        is_group=True, title=(title or "").strip()[:80], created_by=user, last_message_at=timezone.now()
+    )
     ConversationParticipant.objects.bulk_create(
         [ConversationParticipant(conversation=convo, user=u) for u in [user, *users]]
     )
+    system_event(convo, user, "created")
+    _notify_added(convo, user, users)
+    _sync(convo, "conversation")
+    return convo
+
+
+def _notify_added(convo, actor, users):
+    label = convo.title or "a group chat"
+    for u in users:
+        notify(
+            recipient=u,
+            sender=actor,
+            notification_type=NotificationType.GROUP_ADD,
+            target_type=TargetType.CONVERSATION,
+            reference_id=convo.pk,
+            preview=label,
+        )
+
+
+@transaction.atomic
+def update_group(user, conversation_id, *, title=None, image_id=None, remove_image=False) -> Conversation:
+    """Admin changes the group name or photo."""
+    m = _group_membership(user, conversation_id)
+    _require_admin(m)
+    convo = m.conversation
+    if title is not None:
+        title = title.strip()[:80]
+        if title != convo.title:
+            convo.title = title
+            convo.save(update_fields=["title", "updated_at"])
+            system_event(convo, user, "renamed", title=title)
+    if image_id or remove_image:
+        old_id = convo.image_id
+        new_asset = claim_one(user, image_id, purposes={MediaPurpose.GROUP}) if image_id else None
+        if (new_asset.pk if new_asset else None) != old_id:
+            convo.image = new_asset
+            convo.save(update_fields=["image", "updated_at"])
+            release_asset(old_id)
+            system_event(convo, user, "photo" if new_asset else "photo_removed")
+    _sync(convo, "conversation")
     return convo
 
 
@@ -94,8 +180,10 @@ def send_message(
             .exclude(user=sender)
             .select_related("user")
         ).first()
-        if other is not None and is_blocked_between(sender, other.user):
-            raise ServiceError("You can't message this account.", code="blocked", status_code=403)
+        if other is not None:
+            ensure_not_blocked(sender, other.user, "Unblock this account to message it.")
+            if not other.user.is_active:
+                raise ServiceError("This account isn't available.", code="user_unavailable", status_code=404)
     content = (content or "").strip()
     if not (content or media_id or shared_post or shared_reel):
         raise ServiceError("Message cannot be empty.", code="empty_message")
@@ -111,6 +199,7 @@ def send_message(
     message = Message.objects.create(
         conversation=conversation,
         sender=sender,
+        kind=Message.Kind.USER,
         content=content,
         asset=asset,
         media_url=asset.secure_url if asset else "",
@@ -142,6 +231,8 @@ def send_message(
             reference_id=conversation.pk,
             preview=preview,
         )
+    # Muted members get no notification, but their open screens still update.
+    _sync(conversation, "message", exclude=sender.pk, message_id=message.pk)
     return message
 
 
@@ -182,9 +273,18 @@ def mark_read(user, conversation_id):
     return updated
 
 
+def delete_message_for_me(user, message):
+    """Hide a message from this user's view only. Anyone in the conversation can do this to any message."""
+    if not ConversationParticipant.objects.filter(conversation_id=message.conversation_id, user=user).exists():
+        raise ServiceError("Message not found.", code="not_found", status_code=404)
+    MessageHidden.objects.get_or_create(message=message, user=user)
+    return message
+
+
 @transaction.atomic
 def delete_message(user, message):
-    if message.sender_id != user.pk:
+    """Delete for everyone: sender only. The bubble becomes "Message deleted" for all members."""
+    if message.sender_id != user.pk or message.kind == Message.Kind.SYSTEM:
         raise ServiceError("You can only delete your own messages.", code="permission_denied", status_code=403)
     if message.is_deleted:
         return message
@@ -197,6 +297,7 @@ def delete_message(user, message):
     message.shared_post = message.shared_reel = None
     message.save()
     release_asset(asset_id)
+    _sync(message.conversation, "message_deleted", message_id=message.pk)
     return message
 
 
@@ -227,11 +328,14 @@ def leave_group(user, conversation_id) -> bool:
     m.delete()
     remaining = ConversationParticipant.objects.filter(conversation=convo).order_by("joined_at", "id")
     if not remaining.exists():
+        release_asset(convo.image_id)
         convo.delete()
         return True
     if convo.created_by_id == user.pk or convo.created_by_id is None:
         convo.created_by_id = remaining.first().user_id
         convo.save(update_fields=["created_by", "updated_at"])
+    system_event(convo, user, "left")
+    _sync(convo, "conversation", extra_ids=[user.pk])
     return True
 
 
@@ -246,10 +350,15 @@ def add_group_members(user, conversation_id, user_ids) -> list:
     if len(current) + len(wanted) > MAX_GROUP_SIZE:
         raise ServiceError(f"Groups are limited to {MAX_GROUP_SIZE} people.", code="group_too_large")
     users = list(User.objects.filter(pk__in=wanted, is_active=True))
+    if not users:
+        return []
     ConversationParticipant.objects.bulk_create(
-        [ConversationParticipant(conversation=convo, user=u, last_read_at=timezone.now()) for u in users],
+        [ConversationParticipant(conversation=convo, user=u) for u in users],
         ignore_conflicts=True,
     )
+    system_event(convo, user, "added", users=users)
+    _notify_added(convo, user, users)
+    _sync(convo, "conversation")
     return [u.pk for u in users]
 
 
@@ -259,7 +368,11 @@ def remove_group_member(user, conversation_id, member_id) -> bool:
     if int(member_id) == user.pk:
         return leave_group(user, conversation_id)
     _require_admin(m)
+    member = User.objects.filter(pk=member_id).first()
     deleted, _ = ConversationParticipant.objects.filter(conversation=m.conversation, user_id=member_id).delete()
+    if deleted and member is not None:
+        system_event(m.conversation, user, "removed", users=[member])
+        _sync(m.conversation, "conversation", extra_ids=[member.pk])
     return bool(deleted)
 
 

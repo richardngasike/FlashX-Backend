@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 SEND_URL = "https://fcm.googleapis.com/v1/projects/{project}/messages:send"
 TIMEOUT_SECONDS = 4
+MAX_PARALLEL = 10
 
 CHANNEL_MESSAGES = "flashx_messages"
 CHANNEL_ACTIVITY = "flashx_activity"
@@ -118,6 +119,24 @@ def build_message(token, *, title, body, data, channel, tag="", badge=None, high
     }
 
 
+def build_data_message(token, *, data, collapse_key="", ttl_seconds=60, high_priority=True) -> dict:
+    """Silent data-only message: wakes the app's listener without showing anything."""
+    android = {"priority": "HIGH" if high_priority else "NORMAL", "ttl": f"{int(ttl_seconds)}s"}
+    if collapse_key:
+        android["collapse_key"] = collapse_key[:60]
+    return {
+        "message": {
+            "token": token,
+            "data": {k: str(v) for k, v in data.items() if v is not None},
+            "android": android,
+            "apns": {
+                "headers": {"apns-priority": "5", "apns-push-type": "background"},
+                "payload": {"aps": {"content-available": 1}},
+            },
+        }
+    }
+
+
 def _error_status(response) -> str:
     try:
         error = response.json().get("error", {})
@@ -135,16 +154,69 @@ def send_to_user_detailed(user_id, *, title, body, data, channel, tag="", badge=
     Send to every device of ``user_id`` and report what happened:
     ``{"enabled", "devices", "sent", "removed", "errors"}``. Never raises.
     """
-    result = {"enabled": is_enabled(), "devices": 0, "sent": 0, "removed": 0, "errors": []}
-    if not result["enabled"]:
-        return result
+    return _deliver(
+        user_id,
+        lambda token: build_message(
+            token, title=title, body=body, data=data, channel=channel, tag=tag, badge=badge, high_priority=high_priority
+        ),
+    )
+
+
+def send_data_to_user(user_id, *, data, collapse_key="", ttl_seconds=60, high_priority=True) -> int:
+    """Silent data message to every device of ``user_id``. Returns accepted deliveries."""
+    return _deliver(
+        user_id,
+        lambda token: build_data_message(
+            token, data=data, collapse_key=collapse_key, ttl_seconds=ttl_seconds, high_priority=high_priority
+        ),
+    )["sent"]
+
+
+def send_data_to_users(user_ids, *, data, collapse_key="", ttl_seconds=60, high_priority=True) -> int:
+    """Silent data message to many users in one batch (tokens loaded once, HTTP in parallel)."""
+
+    def make(token):
+        return build_data_message(
+            token, data=data, collapse_key=collapse_key, ttl_seconds=ttl_seconds, high_priority=high_priority
+        )
+
+    return _deliver_many([(uid, make) for uid in user_ids])["sent"]
+
+
+def _deliver(user_id, make_payload) -> dict:
+    return _deliver_many([(user_id, make_payload)])
+
+
+def _post(url, access_token, payload):
     import requests
+
+    try:
+        return requests.post(
+            url, json=payload, headers={"Authorization": f"Bearer {access_token}"}, timeout=TIMEOUT_SECONDS
+        ), None
+    except requests.RequestException as exc:
+        return None, exc
+
+
+def _deliver_many(jobs) -> dict:
+    """
+    ``jobs`` is a list of ``(user_id, make_payload(token) -> dict)``. Device
+    tokens are read in one query on the calling thread; only the HTTP calls run
+    in worker threads, so no database connection is opened off-thread.
+    """
+    result = {"enabled": is_enabled(), "devices": 0, "sent": 0, "removed": 0, "errors": []}
+    if not result["enabled"] or not jobs:
+        return result
+    from concurrent.futures import ThreadPoolExecutor
 
     from .models import DeviceToken
 
-    tokens = list(DeviceToken.objects.filter(user_id=user_id).values_list("pk", "token"))
-    result["devices"] = len(tokens)
-    if not tokens:
+    makers = {}
+    for uid, make in jobs:
+        makers.setdefault(int(uid), make)
+    rows = list(DeviceToken.objects.filter(user_id__in=list(makers)).values_list("pk", "user_id", "token"))
+    result["devices"] = len(rows)
+    if not rows:
         return result
     try:
         access_token, project = _access_token()
@@ -153,17 +225,17 @@ def send_to_user_detailed(user_id, *, title, body, data, channel, tag="", badge=
         result["errors"].append(f"credentials: {exc}")
         return result
 
-    dead = []
     url = SEND_URL.format(project=project)
-    for pk, token in tokens:
-        payload = build_message(
-            token, title=title, body=body, data=data, channel=channel, tag=tag, badge=badge, high_priority=high_priority
-        )
-        try:
-            response = requests.post(
-                url, json=payload, headers={"Authorization": f"Bearer {access_token}"}, timeout=TIMEOUT_SECONDS
-            )
-        except requests.RequestException as exc:
+    requests_out = [(pk, makers[uid](token)) for pk, uid, token in rows]
+    if len(requests_out) == 1:
+        responses = [_post(url, access_token, requests_out[0][1])]
+    else:
+        with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL, len(requests_out))) as pool:
+            responses = list(pool.map(lambda job: _post(url, access_token, job[1]), requests_out))
+
+    dead = []
+    for (pk, _), (response, exc) in zip(requests_out, responses, strict=True):
+        if exc is not None:
             logger.warning("FCM request failed: %s", exc)
             result["errors"].append(f"network: {exc}")
             continue
@@ -242,27 +314,27 @@ def _content_for(notification) -> tuple[str, str, str, str]:
     return name, body[:240] or "New activity on FlashX", CHANNEL_ACTIVITY, tag
 
 
-def dispatch_notification(notification_id) -> int:
-    """Push one stored notification to its recipient's devices. Never raises."""
-    from .models import Notification
+def _prepare(notification):
+    """(recipient_id, make_payload) for a stored notification, or None when it must not be pushed."""
+    if notification is None or not notification.recipient.is_active:
+        return None
+    if not wants_push(notification.recipient, notification.notification_type):
+        return None
+    title, body, channel, tag = _content_for(notification)
+    badge = unread_badge(notification.recipient_id)
+    data = {
+        "notification_id": notification.pk,
+        "type": notification.notification_type,
+        "target_type": notification.target_type,
+        "reference_id": notification.reference_id,
+        "sender_id": notification.sender_id,
+        "sender_username": notification.sender.username if notification.sender else None,
+        "badge": badge,
+    }
 
-    try:
-        notification = Notification.objects.select_related("sender", "recipient").filter(pk=notification_id).first()
-        if notification is None or not notification.recipient.is_active:
-            return 0
-        title, body, channel, tag = _content_for(notification)
-        badge = unread_badge(notification.recipient_id)
-        data = {
-            "notification_id": notification.pk,
-            "type": notification.notification_type,
-            "target_type": notification.target_type,
-            "reference_id": notification.reference_id,
-            "sender_id": notification.sender_id,
-            "sender_username": notification.sender.username if notification.sender else None,
-            "badge": badge,
-        }
-        return send_to_user(
-            notification.recipient_id,
+    def make(token):
+        return build_message(
+            token,
             title=title,
             body=body,
             data=data,
@@ -271,6 +343,68 @@ def dispatch_notification(notification_id) -> int:
             badge=badge,
             high_priority=channel == CHANNEL_MESSAGES,
         )
+
+    return notification.recipient_id, make
+
+
+def wants_push(user, notification_type) -> bool:
+    """The user's notification preferences (Settings > Notifications)."""
+    prefs = getattr(user, "notification_prefs", None) or {}
+    if prefs.get("pause_all"):
+        return notification_type in ("missed_call",)
+    group = PREF_GROUPS.get(notification_type)
+    return prefs.get(group, True) if group else True
+
+
+# Notification type -> preference switch in Settings.
+PREF_GROUPS = {
+    "like": "likes",
+    "comment_like": "likes",
+    "comment": "comments",
+    "reply": "comments",
+    "mention": "mentions",
+    "tag": "mentions",
+    "follow": "follows",
+    "follow_request": "follows",
+    "follow_accepted": "follows",
+    "message": "messages",
+    "share": "messages",
+    "story_reply": "messages",
+    "story_reaction": "stories",
+    "live": "live",
+    "live_invite": "live",
+    "group_add": "messages",
+    "missed_call": "calls",
+}
+
+
+def dispatch_notification(notification_id) -> int:
+    """Push one stored notification to its recipient's devices. Never raises."""
+    return dispatch_many([notification_id])
+
+
+def dispatch_many(notification_ids) -> int:
+    """Push several stored notifications in one batch. Never raises."""
+    from .models import Notification
+
+    try:
+        jobs = []
+        for n in Notification.objects.select_related("sender", "recipient").filter(pk__in=list(notification_ids)):
+            job = _prepare(n)
+            if job:
+                jobs.append(job)
+        if not jobs:
+            return 0
+        # Each job targets one recipient; batch them all in a single delivery pass.
+        sent = 0
+        by_user = {}
+        for uid, make in jobs:
+            by_user.setdefault(uid, []).append(make)
+        while by_user:
+            round_jobs = [(uid, makes.pop(0)) for uid, makes in by_user.items()]
+            sent += _deliver_many(round_jobs)["sent"]
+            by_user = {uid: makes for uid, makes in by_user.items() if makes}
+        return sent
     except Exception:  # noqa: BLE001 - push is best effort
-        logger.exception("Push dispatch failed for notification %s", notification_id)
+        logger.exception("Push dispatch failed for notifications %s", list(notification_ids)[:5])
         return 0

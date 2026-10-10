@@ -14,6 +14,7 @@ class ReelSerializer(serializers.ModelSerializer):
     is_liked = serializers.BooleanField(read_only=True, default=False)
     is_saved = serializers.BooleanField(read_only=True, default=False)
     is_owner = serializers.SerializerMethodField()
+    sound = serializers.SerializerMethodField()
 
     class Meta:
         model = Reel
@@ -23,6 +24,7 @@ class ReelSerializer(serializers.ModelSerializer):
             "video",
             "caption",
             "audio_title",
+            "sound",
             "hashtags",
             "duration",
             "width",
@@ -56,18 +58,43 @@ class ReelSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         return bool(request and request.user.is_authenticated and request.user.pk == obj.author_id)
 
+    def get_sound(self, obj) -> dict | None:
+        from apps.posts.serializers import sound_block
+
+        return sound_block(obj, "origin_reel")
+
 
 class ReelCreateSerializer(serializers.Serializer):
     media_id = serializers.IntegerField(min_value=1)
     caption = serializers.CharField(required=False, allow_blank=True, max_length=2200)
     audio_title = serializers.CharField(required=False, allow_blank=True, max_length=120)
     comments_enabled = serializers.BooleanField(required=False, default=True)
+    sound_id = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=40)
+    sound = serializers.JSONField(required=False, allow_null=True, write_only=True)
+    sound_start = serializers.FloatField(required=False, min_value=0, max_value=3600, default=0)
+    sound_volume = serializers.FloatField(required=False, min_value=0, max_value=1, default=1)
+    original_volume = serializers.FloatField(required=False, min_value=0, max_value=1, default=1)
+    allow_sound_reuse = serializers.BooleanField(required=False, default=True)
+
+    def validate(self, attrs):
+        if "sound" in attrs:
+            legacy = attrs.pop("sound")
+            if not attrs.get("sound_id"):
+                from apps.music.services import legacy_sound_id
+
+                attrs["sound_id"] = legacy_sound_id(legacy)
+        return attrs
 
 
 class ReelUpdateSerializer(serializers.Serializer):
     caption = serializers.CharField(required=False, allow_blank=True, max_length=2200)
     audio_title = serializers.CharField(required=False, allow_blank=True, max_length=120)
     comments_enabled = serializers.BooleanField(required=False)
+    sound_id = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=40)
+    sound_start = serializers.FloatField(required=False, min_value=0, max_value=3600)
+    sound_volume = serializers.FloatField(required=False, min_value=0, max_value=1)
+    original_volume = serializers.FloatField(required=False, min_value=0, max_value=1)
+    allow_sound_reuse = serializers.BooleanField(required=False)
 
 
 class ReelViewSerializer(serializers.Serializer):

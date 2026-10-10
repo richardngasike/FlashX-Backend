@@ -48,6 +48,16 @@ class User(AbstractUser):
     reels_count = models.PositiveIntegerField(default=0)
 
     last_seen_at = models.DateTimeField(null=True, blank=True)
+    # False after the app reports it went to the background; True again on resume.
+    presence_online = models.BooleanField(default=True)
+
+    # Privacy
+    show_activity_status = models.BooleanField(
+        default=True, help_text="Others can see when this person is online or was last active."
+    )
+    is_private = models.BooleanField(default=False, help_text="New followers need approval; posts are followers-only.")
+    allow_calls = models.BooleanField(default=True, help_text="People who follow each other can call.")
+    notification_prefs = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -75,7 +85,33 @@ class User(AbstractUser):
 
     @property
     def is_online(self) -> bool:
-        if not self.last_seen_at:
+        if not self.last_seen_at or not self.presence_online:
             return False
         window = settings.FLASHX["ONLINE_WINDOW_SECONDS"]
         return timezone.now() - self.last_seen_at <= timedelta(seconds=window)
+
+    def activity_visible_to(self, viewer) -> bool:
+        """Online status and last seen are shared both ways or not at all."""
+        if viewer is None or not getattr(viewer, "is_authenticated", False):
+            return False
+        if viewer.pk == self.pk:
+            return True
+        return self.show_activity_status and viewer.show_activity_status
+
+
+class PasswordResetCode(models.Model):
+    """A 6-digit code emailed for password reset. Only a keyed hash is stored."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="password_codes")
+    code_hash = models.CharField(max_length=64)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [models.Index(fields=["user", "-created_at"])]
+
+    def __str__(self):
+        return f"reset code for {self.user_id}"

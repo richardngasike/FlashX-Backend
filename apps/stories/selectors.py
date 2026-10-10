@@ -7,7 +7,13 @@ from .models import Story, StoryReaction, StoryView
 
 
 def active_stories(viewer):
-    qs = exclude_blocked(Story.objects.active().select_related("author__profile_image"), viewer, "author_id")
+    following = Follow.objects.filter(follower=viewer).values("following_id")
+    qs = (
+        Story.objects.active()
+        .select_related("author__profile_image")
+        .filter(Q(author__is_private=False) | Q(author=viewer) | Q(author_id__in=following))
+    )
+    qs = exclude_blocked(qs, viewer, "author_id")
     return qs.annotate(
         is_seen=Exists(StoryView.objects.filter(story=OuterRef("pk"), viewer=viewer)),
         my_reaction=StoryReaction.objects.filter(story=OuterRef("pk"), user=viewer).values("reaction")[:1],

@@ -14,6 +14,12 @@ class NotificationType(models.TextChoices):
     STORY_REPLY = "story_reply", "Story reply"
     MESSAGE = "message", "Message"
     SHARE = "share", "Shared content"
+    LIVE = "live", "Went live"
+    LIVE_INVITE = "live_invite", "Live guest invite"
+    GROUP_ADD = "group_add", "Added to a group"
+    FOLLOW_REQUEST = "follow_request", "Follow request"
+    FOLLOW_ACCEPTED = "follow_accepted", "Follow request accepted"
+    MISSED_CALL = "missed_call", "Missed call"
 
 
 class TargetType(models.TextChoices):
@@ -23,6 +29,8 @@ class TargetType(models.TextChoices):
     STORY = "story", "Story"
     USER = "user", "User"
     CONVERSATION = "conversation", "Conversation"
+    LIVE = "live", "Live stream"
+    CALL = "call", "Call"
 
 
 class Notification(models.Model):

@@ -1,6 +1,6 @@
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -24,11 +24,19 @@ def _categories_payload():
     return CategorySerializer(cats, many=True, context={"category_fallbacks": category_cover_fallbacks(cats)}).data
 
 
+class SoundSearchSerializer(serializers.BaseSerializer):
+    def to_representation(self, instance):
+        from apps.music.services import sound_payload
+
+        return sound_payload(instance)
+
+
 TYPES = {
     "users": (services.search_users, UserListSerializer),
     "hashtags": (lambda viewer, q: services.search_hashtags(q), HashtagSerializer),
     "posts": (services.search_posts, PostSerializer),
     "reels": (services.search_reels, ReelSerializer),
+    "sounds": (services.search_sounds, SoundSearchSerializer),
 }
 
 
@@ -52,7 +60,7 @@ class SearchView(APIView):
                 out[name] = serializer(fn(request.user, q)[:5], many=True, context=ctx).data
             return Response(out)
         if kind not in TYPES:
-            raise ValidationError({"type": "Use one of: all, users, hashtags, posts, reels."})
+            raise ValidationError({"type": "Use one of: all, users, hashtags, posts, reels, sounds."})
         fn, serializer = TYPES[kind]
         paginator = SearchPagination()
         page = paginator.paginate_queryset(fn(request.user, q), request, view=self)

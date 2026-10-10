@@ -2,8 +2,9 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Exists, OuterRef
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import generics, status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -17,7 +18,7 @@ from apps.core.exceptions import ServiceError
 from apps.core.pagination import StandardPagination
 from apps.core.throttles import AuthRateThrottle, PasswordResetThrottle
 from apps.follows import services as follow_services
-from apps.follows.models import Follow
+from apps.follows.models import Follow, FollowRequest
 
 from . import selectors, services
 from .serializers import (
@@ -26,8 +27,10 @@ from .serializers import (
     LoginSerializer,
     LogoutSerializer,
     MeSerializer,
+    PasswordResetCodeSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
+    PresenceSerializer,
     RegisterSerializer,
     SuggestedUserSerializer,
     UpdateMeSerializer,
@@ -126,7 +129,7 @@ class PasswordResetRequestView(APIView):
         s = PasswordResetRequestSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         services.send_password_reset(s.validated_data["email"])
-        return Response({"detail": "If that email is registered, a reset link has been sent."})
+        return Response({"detail": "If that email is registered, we sent a 6-digit code to it."})
 
 
 class PasswordResetConfirmView(APIView):
@@ -140,6 +143,22 @@ class PasswordResetConfirmView(APIView):
         s = PasswordResetConfirmSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         services.reset_password(**s.validated_data)
+        return Response({"detail": "Password updated. You can now log in."})
+
+
+class PasswordResetCodeView(APIView):
+    """POST /api/auth/password/reset/code/ — set a new password with the 6-digit emailed code."""
+
+    serializer_class = PasswordResetCodeSerializer
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [PasswordResetThrottle]
+
+    def post(self, request):
+        s = PasswordResetCodeSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        services.reset_password_with_code(**s.validated_data)
         return Response({"detail": "Password updated. You can now log in."})
 
 
@@ -175,9 +194,13 @@ class MeView(APIView):
         return Response(MeSerializer(self._me(request), context={"request": request}).data)
 
     def patch(self, request):
+        was_private = request.user.is_private
         s = UpdateMeSerializer(request.user, data=request.data, partial=True, context={"request": request})
         s.is_valid(raise_exception=True)
         s.save()
+        if was_private and not request.user.is_private:
+            # Going public lets everyone who asked in.
+            follow_services.approve_all_requests(request.user)
         return Response(MeSerializer(self._me(request), context={"request": request}).data)
 
     def delete(self, request):
@@ -203,7 +226,10 @@ class UserDetailView(generics.RetrieveAPIView):
         # Someone who blocked you is not found; someone you blocked stays visible so you can unblock.
         viewer = self.request.user
         qs = selectors.base_users().exclude(pk__in=blocking_me(viewer))
-        qs = qs.annotate(is_blocked=Exists(Block.objects.filter(blocker=viewer, blocked=OuterRef("pk"))))
+        qs = qs.annotate(
+            is_blocked=Exists(Block.objects.filter(blocker=viewer, blocked=OuterRef("pk"))),
+            is_requested=Exists(FollowRequest.objects.filter(requester=viewer, target=OuterRef("pk"))),
+        )
         return selectors.with_follow_flags(qs, viewer)
 
 
@@ -219,19 +245,71 @@ class FollowView(APIView):
         return get_object_or_404(User.objects.filter(is_active=True), pk=pk)
 
     def post(self, request, pk):
+        """Follow, or send a request to a private account (follow_status "requested")."""
         target = self._target(pk)
-        created = follow_services.follow(request.user, target)
+        state, created = follow_services.follow_or_request(request.user, target)
         target.refresh_from_db(fields=["followers_count"])
         return Response(
-            {"is_following": True, "followers_count": target.followers_count},
+            {
+                "is_following": state == "following",
+                "follow_status": state,
+                "followers_count": target.followers_count,
+            },
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
     def delete(self, request, pk):
+        """Unfollow, or cancel a pending request."""
         target = self._target(pk)
+        follow_services.cancel_request(request.user, target)
         follow_services.unfollow(request.user, target)
         target.refresh_from_db(fields=["followers_count"])
-        return Response({"is_following": False, "followers_count": target.followers_count})
+        return Response({"is_following": False, "follow_status": "none", "followers_count": target.followers_count})
+
+
+class FollowRequestsView(APIView):
+    """GET /api/users/me/follow-requests/ — people waiting for approval (private accounts)."""
+
+    serializer_class = UserListSerializer
+
+    def get(self, request):
+        ids = FollowRequest.objects.filter(target=request.user).values("requester_id")
+        qs = selectors.with_follow_flags(selectors.base_users(request.user).filter(pk__in=ids), request.user)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs.order_by("-pk"), request, view=self)
+        return paginator.get_paginated_response(UserListSerializer(page, many=True, context={"request": request}).data)
+
+
+class FollowRequestActionView(APIView):
+    """POST /api/users/me/follow-requests/{user_id}/approve/ or .../decline/"""
+
+    serializer_class = UserListSerializer
+
+    def post(self, request, pk, action):
+        if action == "approve":
+            follow_services.approve_request(request.user, pk)
+        elif action == "decline":
+            follow_services.decline_request(request.user, pk)
+        else:
+            raise NotFound()
+        return Response({"ok": True})
+
+
+class PresenceView(APIView):
+    """
+    POST /api/users/me/presence/ {"state": "online" | "offline"}
+    The app reports when it comes to the foreground (and every minute while open)
+    and when it goes to the background. Last seen is kept either way.
+    """
+
+    serializer_class = PresenceSerializer
+
+    def post(self, request):
+        s = PresenceSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        online = s.validated_data["state"] == "online"
+        User.objects.filter(pk=request.user.pk).update(presence_online=online, last_seen_at=timezone.now())
+        return Response({"state": s.validated_data["state"]})
 
 
 class RemoveFollowerView(APIView):
@@ -252,7 +330,11 @@ class _FollowListBase(generics.ListAPIView):
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):  # schema generation
             return User.objects.none()
-        target = get_object_or_404(User.objects.filter(is_active=True), pk=self.kwargs["pk"])
+        target = get_object_or_404(selectors.base_users(self.request.user), pk=self.kwargs["pk"])
+        viewer = self.request.user
+        follows_target = Follow.objects.filter(follower=viewer, following=target).exists()
+        if target.is_private and target.pk != viewer.pk and not follows_target:
+            return User.objects.none()
         if self.relation == "followers":
             ids = Follow.objects.filter(following=target).values("follower_id")
         else:

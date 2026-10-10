@@ -17,6 +17,12 @@ MESSAGES = {
     "story_reply": "replied to your story: {preview}",
     "message": "sent you a message.",
     "share": "shared something with you.",
+    "live": "started a live video: {preview}",
+    "live_invite": "invited you to join their live video.",
+    "group_add": "added you to a group: {preview}",
+    "missed_call": "{preview}",
+    "follow_request": "asked to follow you.",
+    "follow_accepted": "accepted your follow request.",
 }
 
 

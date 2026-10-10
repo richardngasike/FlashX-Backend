@@ -1,3 +1,4 @@
+from django.db.models import Q
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
@@ -56,6 +57,7 @@ class MessageSerializer(serializers.ModelSerializer):
     story = serializers.SerializerMethodField()
     is_mine = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
+    event = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
@@ -69,6 +71,8 @@ class MessageSerializer(serializers.ModelSerializer):
             "shared_post",
             "shared_reel",
             "story",
+            "kind",
+            "event",
             "is_read",
             "is_deleted",
             "is_mine",
@@ -79,6 +83,13 @@ class MessageSerializer(serializers.ModelSerializer):
 
     def get_content(self, obj) -> str | None:
         return None if obj.is_deleted else obj.content
+
+    def get_event(self, obj) -> dict | None:
+        """Group events only: what happened, ready to show as "Ama added Brian"."""
+        if obj.kind != Message.Kind.SYSTEM:
+            return None
+        meta = obj.meta or {}
+        return {"type": meta.get("event", ""), "user_ids": meta.get("user_ids", []), "title": meta.get("title", "")}
 
     def get_media(self, obj) -> dict | None:
         if obj.is_deleted or not obj.media_public_id:
@@ -113,7 +124,7 @@ class MessageSerializer(serializers.ModelSerializer):
         return obj.sender_id == self.context["request"].user.pk
 
     def get_status(self, obj) -> str | None:
-        if obj.sender_id != self.context["request"].user.pk:
+        if obj.kind == Message.Kind.SYSTEM or obj.sender_id != self.context["request"].user.pk:
             return None
         read_until = self.context.get("others_read_until")
         return "read" if (obj.is_read or (read_until and read_until >= obj.created_at)) else "sent"
@@ -129,6 +140,7 @@ class ConversationSerializer(serializers.Serializer):
     unread_count = serializers.IntegerField(default=0)
     is_muted = serializers.BooleanField(default=False)
     is_blocked = serializers.SerializerMethodField()
+    can_message = serializers.SerializerMethodField()
     admin_id = serializers.IntegerField(source="created_by_id", allow_null=True)
     is_admin = serializers.SerializerMethodField()
     member_count = serializers.SerializerMethodField()
@@ -139,16 +151,32 @@ class ConversationSerializer(serializers.Serializer):
         me = self.context["request"].user.pk
         return [m.user for m in obj.memberships.all() if m.user_id != me]
 
+    def _block_sets(self):
+        if "_blocked_by_me" not in self.context:
+            from apps.blocks.models import Block
+
+            me = self.context["request"].user
+            rows = Block.objects.filter(Q(blocker=me) | Q(blocked=me)).values_list("blocker_id", "blocked_id")
+            self.context["_blocked_by_me"] = {b for a, b in rows if a == me.pk}
+            self.context["_blocking_me"] = {a for a, b in rows if b == me.pk}
+        return self.context["_blocked_by_me"], self.context["_blocking_me"]
+
     def get_is_blocked(self, obj) -> bool:
-        """Direct threads only: True when either person has blocked the other (sending is disabled)."""
+        """Direct threads only: True when *you* blocked the other person. Never reveals that they blocked you."""
         if obj.is_group:
             return False
-        if "_hidden_user_ids" not in self.context:
-            from apps.blocks.selectors import hidden_user_ids
+        blocked_by_me, _ = self._block_sets()
+        return any(u.pk in blocked_by_me for u in self._others(obj))
 
-            self.context["_hidden_user_ids"] = hidden_user_ids(self.context["request"].user)
-        hidden = self.context["_hidden_user_ids"]
-        return any(u.pk in hidden for u in self._others(obj))
+    def get_can_message(self, obj) -> bool:
+        """False for a direct thread with someone you blocked or who is unavailable to you."""
+        if obj.is_group:
+            return True
+        blocked_by_me, blocking_me = self._block_sets()
+        others = self._others(obj)
+        return bool(others) and all(
+            u.is_active and u.pk not in blocked_by_me and u.pk not in blocking_me for u in others
+        )
 
     def get_is_admin(self, obj) -> bool:
         return obj.is_group and obj.created_by_id == self.context["request"].user.pk
@@ -165,6 +193,8 @@ class ConversationSerializer(serializers.Serializer):
         return others[0].full_name or others[0].username if others else "FlashX user"
 
     def get_avatar(self, obj) -> dict | None:
+        if obj.is_group:
+            return avatar_payload(obj.image) if obj.image_id else None
         others = self._others(obj)
         return avatar_payload(others[0].profile_image) if others else None
 
@@ -176,7 +206,11 @@ class ConversationSerializer(serializers.Serializer):
         msg = self.context.get("last_messages", {}).get(getattr(obj, "last_message_id", None))
         if msg is None:
             return None
-        if msg.is_deleted:
+        if msg.kind == Message.Kind.SYSTEM:
+            me = self.context["request"].user.pk
+            actor = "You" if msg.sender_id == me else (msg.sender.full_name or msg.sender.username).split(" ")[0]
+            text = f"{actor} {msg.content}"
+        elif msg.is_deleted:
             text = "Message deleted"
         elif msg.content:
             text = msg.content[:120]
@@ -193,6 +227,7 @@ class ConversationSerializer(serializers.Serializer):
             "text": text,
             "sender_id": msg.sender_id,
             "is_mine": msg.sender_id == self.context["request"].user.pk,
+            "kind": msg.kind,
             "created_at": msg.created_at,
         }
 
@@ -221,6 +256,12 @@ class StartConversationSerializer(serializers.Serializer):
         if bool(attrs.get("recipient_id")) == bool(attrs.get("participant_ids")):
             raise serializers.ValidationError("Provide recipient_id for a direct chat or participant_ids for a group.")
         return attrs
+
+
+class GroupUpdateSerializer(serializers.Serializer):
+    title = serializers.CharField(required=False, allow_blank=True, max_length=80)
+    image_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    remove_image = serializers.BooleanField(required=False, default=False)
 
 
 class MuteSerializer(serializers.Serializer):

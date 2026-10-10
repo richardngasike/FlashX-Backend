@@ -62,6 +62,12 @@ class Post(models.Model):
     comments_enabled = models.BooleanField(default=True)
     mood = models.CharField(max_length=12, choices=Mood.choices, blank=True)
     music_title = models.CharField(max_length=120, blank=True, help_text="Song label shown on the post.")
+    sound = models.ForeignKey("music.Sound", null=True, blank=True, on_delete=models.SET_NULL, related_name="posts")
+    # Where the song starts (seconds) and the mix of song and the video's own audio (0 to 1).
+    sound_start = models.FloatField(default=0)
+    sound_volume = models.FloatField(default=1)
+    original_volume = models.FloatField(default=1)
+    allow_sound_reuse = models.BooleanField(default=True, help_text="Others may use this video's original sound.")
     event_title = models.CharField(max_length=120, blank=True)
     event_starts_at = models.DateTimeField(null=True, blank=True)
 

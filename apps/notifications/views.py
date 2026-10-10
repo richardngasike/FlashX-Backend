@@ -54,6 +54,16 @@ def resolve_targets(notifications):
             "thumbnail": story_thumbs.get(sid),
             "available": sid in story_thumbs,
         }
+    if by_type.get("live"):
+        from apps.live.models import LiveStream
+
+        live_now = set(
+            LiveStream.objects.filter(pk__in=by_type["live"], status=LiveStream.Status.LIVE).values_list(
+                "pk", flat=True
+            )
+        )
+        for lid in by_type["live"]:
+            out[("live", str(lid))] = {"live_id": lid, "thumbnail": None, "is_live": lid in live_now}
     for cid, (post_id, reel_id) in comment_post.items():
         out[("comment", str(cid))] = {
             "comment_id": cid,

@@ -16,9 +16,14 @@ def conversations_for(user):
     mine = ConversationParticipant.objects.filter(user=user, conversation=OuterRef("pk"))
     last_read = Subquery(mine.values("last_read_at")[:1])
     cleared = Subquery(mine.values("cleared_at")[:1])
-    last_msg = Message.objects.filter(conversation=OuterRef("pk")).order_by("-created_at", "-id")
+    last_msg = (
+        Message.objects.filter(conversation=OuterRef("pk"))
+        .exclude(hidden_for__user=user)
+        .order_by("-created_at", "-id")
+    )
     return (
         Conversation.objects.filter(memberships__user=user)
+        .select_related("image")
         .annotate(
             my_last_read=Coalesce(last_read, Value(EPOCH), output_field=DateTimeField()),
             my_cleared=Coalesce(cleared, Value(EPOCH), output_field=DateTimeField()),
@@ -43,12 +48,17 @@ def conversations_for(user):
 
 
 def visible_conversations(user):
-    """Hide threads the user cleared until something new arrives."""
+    """
+    The chat list. Groups always show (they get a "created the group" event, so
+    ``last_message_at`` is set from the start); a direct thread shows once it
+    has a message. Threads the user cleared stay hidden until something new arrives.
+    """
     return (
         conversations_for(user)
-        .filter(last_message_at__isnull=False)
-        .filter(last_message_at__gt=F("my_cleared"))
-        .order_by("-last_message_at")
+        .filter(Q(last_message_at__isnull=False) | Q(is_group=True))
+        .annotate(activity_at=Coalesce("last_message_at", "created_at"))
+        .filter(activity_at__gt=F("my_cleared"))
+        .order_by("-activity_at", "-created_at")
     )
 
 
@@ -62,7 +72,7 @@ def messages_for(user, conversation_id, cleared_at=None):
     )
     if cleared_at:
         qs = qs.filter(created_at__gt=cleared_at)
-    return qs
+    return qs.exclude(hidden_for__user=user)
 
 
 def users_by_id(ids):

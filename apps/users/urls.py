@@ -6,6 +6,13 @@ from . import views
 
 urlpatterns = [
     path("me/", views.MeView.as_view(), name="users-me"),
+    path("me/presence/", views.PresenceView.as_view(), name="users-presence"),
+    path("me/follow-requests/", views.FollowRequestsView.as_view(), name="users-follow-requests"),
+    path(
+        "me/follow-requests/<int:pk>/<str:action>/",
+        views.FollowRequestActionView.as_view(),
+        name="users-follow-request-action",
+    ),
     path("suggested/", views.SuggestedUsersView.as_view(), name="users-suggested"),
     path("by-username/<str:username>/", views.UserByUsernameView.as_view(), name="users-by-username"),
     path("<int:pk>/", views.UserDetailView.as_view(), name="users-detail"),

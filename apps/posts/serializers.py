@@ -77,6 +77,7 @@ class PostSerializer(serializers.ModelSerializer):
     is_owner = serializers.SerializerMethodField()
     is_edited = serializers.SerializerMethodField()
     event = serializers.SerializerMethodField()
+    sound = serializers.SerializerMethodField()
 
     class Meta:
         model = Post
@@ -88,6 +89,7 @@ class PostSerializer(serializers.ModelSerializer):
             "location",
             "mood",
             "music_title",
+            "sound",
             "event",
             "visibility",
             "category",
@@ -138,6 +140,9 @@ class PostSerializer(serializers.ModelSerializer):
     def get_is_edited(self, obj) -> bool:
         return (obj.updated_at - obj.created_at).total_seconds() > 5
 
+    def get_sound(self, obj) -> dict | None:
+        return sound_block(obj, "origin_post")
+
 
 class PostWriteSerializer(serializers.Serializer):
     caption = serializers.CharField(required=False, allow_blank=True, max_length=2200)
@@ -149,6 +154,15 @@ class PostWriteSerializer(serializers.Serializer):
     comments_enabled = serializers.BooleanField(required=False)
     mood = serializers.ChoiceField(choices=Mood.choices, required=False, allow_blank=True)
     music_title = serializers.CharField(required=False, allow_blank=True, max_length=120)
+    # "123" (a FlashX sound) or "jamendo:456" (catalogue track); null removes the sound.
+    sound_id = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=40)
+    # Previous app version sent the whole sound object.
+    sound = serializers.JSONField(required=False, allow_null=True, write_only=True)
+    sound_start = serializers.FloatField(required=False, min_value=0, max_value=3600)
+    sound_volume = serializers.FloatField(required=False, min_value=0, max_value=1)
+    original_volume = serializers.FloatField(required=False, min_value=0, max_value=1)
+    allow_sound_reuse = serializers.BooleanField(required=False)
+
     event_title = serializers.CharField(required=False, allow_blank=True, max_length=120)
     event_starts_at = serializers.DateTimeField(required=False, allow_null=True)
     media_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, allow_empty=True)
@@ -172,6 +186,12 @@ class PostWriteSerializer(serializers.Serializer):
         return ids
 
     def validate(self, attrs):
+        if "sound" in attrs:
+            legacy = attrs.pop("sound")
+            if "sound_id" not in attrs:
+                from apps.music.services import legacy_sound_id
+
+                attrs["sound_id"] = legacy_sound_id(legacy)
         title, starts = attrs.get("event_title"), attrs.get("event_starts_at")
         if ("event_title" in attrs or "event_starts_at" in attrs) and bool((title or "").strip()) != bool(starts):
             raise serializers.ValidationError({"event_starts_at": "An event needs both a title and a start time."})
@@ -190,3 +210,22 @@ class PostWriteSerializer(serializers.Serializer):
 class ShareSerializer(serializers.Serializer):
     recipient_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), min_length=1, max_length=20)
     message = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+
+
+def sound_block(obj, origin_attr):
+    """The sound on a post or reel plus how to play it (start, volumes, whether it is the video's own audio)."""
+    sound = obj.sound
+    if sound is None:
+        return None
+    from apps.music.services import sound_payload
+
+    data = sound_payload(sound)
+    own_audio = getattr(sound, f"{origin_attr}_id", None) == obj.pk
+    data.update(
+        start=obj.sound_start,
+        volume=obj.sound_volume,
+        original_volume=obj.original_volume,
+        # The video's own soundtrack: nothing extra to play.
+        plays_separately=not own_audio,
+    )
+    return data

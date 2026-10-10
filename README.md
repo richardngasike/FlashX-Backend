@@ -51,8 +51,8 @@ backend/
     urls.py  wsgi.py  asgi.py
   apps/
     core/           response envelope, error handler, pagination, throttles, health, cron endpoint, seed_dev
-    users/          custom User, JWT auth with presence, register/login, password reset, profiles
-    follows/        follow graph and counters
+    users/          custom User, JWT auth with presence, register/login, password reset (code and link), profiles
+    follows/        follow graph, counters and follow requests for private accounts
     blocks/         blocking and the filters that hide blocked users everywhere
     media/          MediaAsset, Cloudinary service, upload signing and validation, orphan purge
     posts/          posts, carousel media, hashtags, categories, tags, mood/music/event, feed, visibility
@@ -61,11 +61,16 @@ backend/
     saves/          saved posts and reels
     stories/        24-hour stories, views, reactions, replies to DM, expiry purge
     reels/          short vertical video with distinct view counting
-    messaging/      direct and group conversations, read state, shared posts/reels/stories
-    notifications/  activity feed, device tokens, push delivery (FCM)
+    messaging/      direct and group conversations, group photos and system events, delete for me, read state, shared posts/reels/stories
+    notifications/  activity feed, device tokens, push delivery and real-time sync events (FCM), per-user preferences
     search/         search, recent searches, explore and discovery
     reports/        content reports and moderation actions
-  tests/            API test suite (131 tests, runs against PostgreSQL)
+    live/           live video: streams, presence, comments, guest invites, LiveKit tokens
+    ads/            sponsored posts with scheduling, weighting, impressions and clicks
+    music/          sound library: Jamendo catalogue search with licence filtering, original sounds, sound pages
+    calls/          voice and video calls between mutual followers (LiveKit rooms, ringing, missed calls)
+  tests/            API test suite (186 tests, runs against PostgreSQL)
+  tools/e2e/        end-to-end live video and call checks against a real LiveKit server
   .env.example      every environment variable, documented
   .env              ready-to-run local configuration (git-ignored)
   vercel.json       region, function timeout, daily cron
@@ -232,6 +237,38 @@ All settings come from environment variables: `.env` locally, or *Project Settin
 | `DEFAULT_FROM_EMAIL` | `FlashX <no-reply@flashx.app>` | |
 | `PASSWORD_RESET_URL` | `flashx://reset-password?uid={uid}&token={token}` | Link in reset emails; `{uid}` and `{token}` are filled in |
 
+Password reset sends a 6-digit code (valid 15 minutes, 5 attempts) and the link. With the console backend nobody receives it, so production needs SMTP. Gmail setup:
+
+1. Turn on 2-Step Verification for the Google account.
+2. Create an app password at <https://myaccount.google.com/apppasswords>.
+3. Set in Vercel, then redeploy:
+
+```
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=you@gmail.com
+EMAIL_HOST_PASSWORD=<the 16-character app password>
+DEFAULT_FROM_EMAIL=FlashX <you@gmail.com>
+```
+
+Gmail allows about 500 emails a day. For more volume use a transactional provider (Brevo, Mailgun, SendGrid, Amazon SES) with the same variables and that provider's SMTP host.
+
+### Live video
+
+| Variable | Default | Notes |
+|---|---|---|
+| `LIVEKIT_URL` | empty | `wss://<project>.livekit.cloud` |
+| `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | empty | From the LiveKit project settings. Blank turns live video and calls off (`live/` reports `available: false`, `calls/` returns `503 calls_unavailable`) |
+
+### Music
+
+| Variable | Default | Notes |
+|---|---|---|
+| `JAMENDO_CLIENT_ID` | empty | Client id from <https://devportal.jamendo.com>. Blank hides the song catalogue; original sounds still work |
+| `MUSIC_COMMERCIAL_USE` | `True` | Keep `True` while the app shows ads: only tracks whose licence allows commercial use (no `NC`) are offered. Tracks with `ND` are never offered because posts mix and trim them |
+
 ### Media and content limits
 
 | Variable | Default | Notes |
@@ -321,7 +358,7 @@ Cursor endpoints accept `page_size` (max 50; 100 for chat).
 
 ## 7. Endpoint reference
 
-All paths are under `/api/`. Every endpoint needs a token except `health/`, `auth/register/`, `auth/login/`, `auth/refresh/`, `auth/password/reset/`, `auth/password/reset/confirm/` and `auth/username-available/`. The cron endpoint uses its own secret.
+All paths are under `/api/`. Every endpoint needs a token except `health/`, `auth/register/`, `auth/login/`, `auth/refresh/`, `auth/password/reset/`, `auth/password/reset/confirm/`, `auth/password/reset/code/` and `auth/username-available/`. The cron endpoint uses its own secret.
 
 ### Auth
 
@@ -334,24 +371,32 @@ All paths are under `/api/`. Every endpoint needs a token except `health/`, `aut
 | POST | `auth/password/change/` | `current_password, new_password` returns fresh tokens; all other sessions are revoked |
 | POST | `auth/password/reset/` | `email` (always 200) |
 | POST | `auth/password/reset/confirm/` | `uid, token, new_password` |
+| POST | `auth/password/reset/code/` | `email, code` (6 digits from the email), `new_password`. Signs out every session |
 | GET | `auth/username-available/?username=` | `{available, reason}` |
 
 ### Users and follows
 
 | Method | Path | Notes |
 |---|---|---|
-| GET / PATCH / DELETE | `users/me/` | PATCH: `full_name, username, bio, website, location, profile_image_id, cover_image_id` (`null` removes an image). DELETE needs `password` |
+| GET / PATCH / DELETE | `users/me/` | PATCH: `full_name, username, bio, website, location, profile_image_id, cover_image_id` (`null` removes an image), `is_private`, `show_activity_status`, `allow_calls`, `notification_prefs` (partial map of switches: `pause_all, messages, calls, comments, likes, mentions, follows, stories, live`). DELETE needs `password` |
+| POST | `users/me/presence/` | `online: bool`. The app sends `true` on start and every 60 s while open, `false` when it goes to the background |
+| GET | `users/me/follow-requests/` | Pending requests to your private account |
+| POST | `users/me/follow-requests/{user_id}/approve\|decline/` | |
 | GET | `users/me/likes/` | Posts you liked, newest like first |
 | GET | `users/me/saved/?type=posts\|reels` | Saved items, newest save first |
 | GET | `users/{id}/`, `users/by-username/{username}/` | Profile with counts, `is_following`, `follows_you`, `is_me`, `is_blocked`. 404 if they blocked you |
-| POST / DELETE | `users/{id}/follow/` | Follow / unfollow |
+| POST / DELETE | `users/{id}/follow/` | Follow (201 when created) or, for a private account, request to follow. Returns `follow_status` (`following\|requested\|none`). DELETE unfollows or cancels the request |
 | DELETE | `users/{id}/remove-follower/` | |
 | GET | `users/{id}/followers/`, `users/{id}/following/` | Optional `?q=` filter |
 | GET | `users/suggested/?page=&page_size=` | People you may know: people who follow you, then mutual connections. Each card has `mutual_count`, `mutual_preview` (up to 2 first names) and `reason` ("Follows you", "Followed by Faith + 2 more"). `limit` works as the page size |
 | POST / DELETE | `users/{id}/block/` | Block / unblock. Blocking removes follows both ways and the notifications between you |
 | GET | `users/me/blocked/` | Accounts you blocked, with `blocked_at` (page style) |
 
-**Blocking** works in both directions. Neither person sees the other's posts, reels, stories, comments, likes lists, search results or suggestions. Neither can follow, message, tag or notify the other. The person who blocked can still open the other's profile (`is_blocked: true`) to unblock; the blocked person gets 404. Existing direct threads stay listed with `is_blocked: true`, and sending returns `403 blocked`.
+**Blocking** works in both directions. Neither person sees the other's posts, reels, stories, comments, likes lists, search results, sounds, presence or suggestions. Neither can follow, message, call, tag or notify the other. The person who blocked can still open the other's profile (`is_blocked: true`) to unblock and gets `403 blocked` when sending. The blocked person is never told: their requests get the same generic `404 user_unavailable` ("This account isn't available") as a deleted account, and `is_blocked` is only ever true for the person who blocked. Existing direct threads stay listed with `can_message: false`; groups both people are in keep working.
+
+**Private accounts.** Posts, reels, stories and follower lists are visible only to approved followers. Profiles show `follow_status`, `can_view_content` and `is_private`. Switching back to public approves every pending request.
+
+**Activity status.** `is_online` and `last_seen_at` are returned only when both people have `show_activity_status` on and neither blocked the other (reciprocal, like other apps). Someone counts as online while their last heartbeat is under 150 s old.
 
 ### Media
 
@@ -362,7 +407,7 @@ All paths are under `/api/`. Every endpoint needs a token except `health/`, `aut
 | POST | `media/upload/` | Multipart `purpose, file`; the server uploads to Cloudinary. Vercel rejects bodies over 4.5 MB |
 | DELETE | `media/{id}/` | Discards an unattached upload |
 
-Purposes: `avatar` and `cover` (images); `post`, `story` and `message` (image or video); `reel` (video).
+Purposes: `avatar`, `cover` and `group` (images); `post`, `story` and `message` (image or video); `reel` (video). Media responses include `large` (viewer) and `original` (download) URLs.
 
 ### Posts and comments
 
@@ -414,14 +459,68 @@ Post `type` is one of `text`, `image`, `carousel`, `video` or `mixed`.
 | POST | `messages/conversations/` | `recipient_id` (direct), or `participant_ids[]` and `title` (group) |
 | GET | `messages/{conversation_id}/` | Messages, newest first. Your own messages have `status: sent\|read` |
 | DELETE | `messages/{conversation_id}/` | Clears the thread for you |
-| GET | `messages/{conversation_id}/info/` | |
 | POST | `messages/{conversation_id}/read/` | |
 | POST | `messages/{conversation_id}/mute/` | `muted: bool` |
 | POST | `messages/{conversation_id}/leave/` | Leave a group. If the admin leaves, the longest-standing member becomes admin. An empty group is deleted |
 | GET / POST | `messages/{conversation_id}/members/` | GET: every member (you included), admin first, each with `is_admin`. POST (admin): `user_ids[]` adds people and returns the ids actually added |
 | DELETE | `messages/{conversation_id}/members/{user_id}/` | Admin removes someone. Removing yourself is the same as leaving |
-| DELETE | `messages/message/{id}/` | Sender only. Soft-deletes the message ("Message deleted") and removes its media |
+| GET / PATCH | `messages/{conversation_id}/info/` | PATCH (group admin): `title`, `image_id` (an upload with purpose `group`), `remove_image` |
+| DELETE | `messages/message/{id}/?for=everyone\|me` | `everyone` (default, sender only): soft-deletes the message ("Message deleted") and removes its media. `me` (any member): hides it from your own thread and chat list only, on every device |
 | GET | `messages/unread-count/` | |
+
+Groups record system messages (`kind: system`, `event: created\|added\|removed\|left\|renamed\|photo\|photo_removed`) so a new group appears in every member's list straight away, even before anyone writes, and the list is ordered by `activity_at` (last message, or creation for an empty group).
+
+### Calls
+
+Voice and video calls between people who follow each other, carried by the same LiveKit project as live video. Signalling is the API plus FCM data messages (`sync: call`), with polling as a fallback.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `calls/` | Your call history (missed, declined, ended...) |
+| POST | `calls/` | `user_id, kind` (`voice\|video`). Requires a mutual follow, `allow_calls` on their side and no block. `409 already_in_call` if you are in one; the call comes back `busy` if they are |
+| GET | `calls/{id}/` | Current status. Ringing calls expire to `missed` after 45 s |
+| POST | `calls/{id}/accept/` | Callee. Returns the LiveKit `{url, token, room}`; `410` if the call already ended |
+| POST | `calls/{id}/decline/`, `calls/{id}/cancel/`, `calls/{id}/end/` | `end` accepts `failed: true` when the connection could not be made |
+
+Missed and cancelled calls create a `missed_call` notification. Ending a call deletes its LiveKit room.
+### Live video
+
+Video and audio travel through LiveKit. The API issues room tokens and keeps the stream, presence, comments and guests. The app polls `comments/` every few seconds; that call is also the heartbeat. A stream whose host is silent for 90 seconds ends by itself.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `live/` | `{available, results}`: streams on air, people you follow first, with `viewer_count` |
+| POST | `live/` | `title?`. Go live. Returns `{stream, role, livekit: {url, token, room, identity}}` and notifies up to 200 recent followers |
+| GET | `live/{id}/` | One stream |
+| POST | `live/{id}/join/` | Start watching. Same shape as POST `live/`, `role` is `viewer` or `guest` |
+| POST | `live/{id}/leave/` | Stop watching. The host leaving ends the stream |
+| POST | `live/{id}/end/` | Host only |
+| GET | `live/{id}/comments/?after=` | `{status, viewer_count, role, invited, guests, comments}` |
+| POST | `live/{id}/comments/` | `text` (max 300) |
+| GET | `live/{id}/viewers/` | People watching now |
+| POST | `live/{id}/invite/` | Host: `user_id` of someone watching. Up to 3 guests on screen |
+| POST | `live/{id}/invite/respond/` | `accept`. Accepting returns a new token that can publish camera and microphone |
+| POST | `live/{id}/guests/{user_id}/remove/` | Host takes a guest off screen, or a guest steps down |
+
+### Sponsored posts and music
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `ads/?count=3` | Running ads, weighted random. The app shows one after every few feed posts, labelled Sponsored |
+| POST | `ads/{id}/impression/` | Ad was on screen |
+| POST | `ads/{id}/click/` | Button tapped. Returns `{link_url}` to open |
+| GET | `music/search/?q=&genre=&limit=` | `{catalogue, original, popular, catalogue_enabled}`. `catalogue`: Jamendo tracks (title, artist or genre match) whose Creative Commons licence fits the app (see `MUSIC_COMMERCIAL_USE`). `original`: FlashX users' original sounds. Empty `q` and `genre` return trending tracks and the most used sounds |
+| GET | `music/genres/` | Genre filters for the picker |
+| GET | `music/sounds/{id}/` | One stored sound with `uses_count` and `usable` |
+| GET | `music/sounds/{id}/posts/`, `music/sounds/{id}/reels/` | Posts or reels using a sound, newest first |
+
+Posts and reels take `sound_id` (`"123"` for a stored sound, `"jamendo:456"` for a catalogue track), `sound_start` (seconds), `sound_volume` and `original_volume` (0..1). Catalogue details are re-read from Jamendo on the server, so the app cannot attach arbitrary audio. Reads return `sound` with the licence name and link, an `attribution` line, the mix, and `plays_separately` (false when the sound is the video's own soundtrack). A video posted without a chosen song becomes an **original sound** others can use, unless `allow_sound_reuse` is false or the post is not public. No YouTube or other unlicensed audio is used. Older posts keep their Deezer or iTunes preview as an inactive sound that still plays but cannot be added to new posts.
+
+**Licensing.** The Jamendo API is free for non-commercial apps. FlashX shows ads, so before launching with the catalogue switched on, get Jamendo's agreement for commercial use of the API (contact Jamendo through the developer portal). Independently of that, `MUSIC_COMMERCIAL_USE=True` (the default) offers only tracks whose Creative Commons licence allows commercial use, and `ND` tracks are never offered. Show the `attribution` line and licence wherever the sound appears; the app does.
+
+### Share links
+
+`/p/{id}/`, `/r/{id}/` and `/u/{username}/` (outside `/api/`) are public pages with Open Graph tags for link previews. They show only public content and open the app through `flashx://open/...` (Android App Links also claim them).
 
 ### Notifications, search, discovery, reports, system
 
@@ -440,7 +539,7 @@ Post `type` is one of `text`, `image`, `carousel`, `video` or `mixed`.
 | GET | `explore/categories/`, `explore/hashtags/{name}/` | |
 | POST | `reports/` | `target_type` (`post\|reel\|comment\|user`), `target_id, reason, details?` |
 | GET | `reports/reasons/` | Reason list for the report sheet |
-| GET | `health/` | Liveness and database check (no auth) |
+| GET | `health/` | Liveness, database and push check (no auth). `features` reports `live`, `calls`, `push` and `music`; `api_version` is 3 |
 | GET | `cron/maintenance/` | Scheduled clean-up; needs `Authorization: Bearer <CRON_SECRET>` |
 
 ## 8. Media uploads
@@ -488,7 +587,20 @@ The admin is at `/<ADMIN_URL>` (`/admin/` by default). Every model is registered
 - **Reports:** shows the target and its number of open reports. Actions are *Dismiss*, *Mark as actioned*, *Hide reported content*, and *Hide content and suspend its owner*. The reviewer and time are recorded.
 - **Messages:** metadata only. Message content is not shown, to protect privacy.
 - **Uploaded media:** every Cloudinary asset with its owner, purpose, size and attachment state.
+- **Sponsored posts:** create and schedule ads (see below).
+- **Live videos:** every stream with its comments; *End selected live videos* stops a stream for everyone.
 - **Categories:** manage the Discover categories (name, slug, icon, cover, order). Without a cover, the newest public photo in the category is used.
+
+### Running an ad
+
+1. Open the admin and go to *Sponsored posts > Add*.
+2. Fill in the advertiser name, headline, body text and the link people should open (`link_url`).
+3. Upload the image (1080 x 1080 or 1080 x 1350 works best) and, optionally, the advertiser logo. Both go to Cloudinary under `<CLOUDINARY_ROOT_FOLDER>/ads`. You can paste an image URL instead.
+4. Pick the button text, then set `starts_at` / `ends_at` to schedule it (leave blank to run immediately and indefinitely).
+5. `weight` (1 to 10) makes an ad show more often relative to the others.
+6. Save with *Active* ticked. Impressions, clicks and click-through rate appear in the list; use the *Activate* / *Deactivate* actions to pause campaigns.
+
+If no ad is running, the feed simply shows no sponsored posts.
 
 ## 10. Scheduled jobs
 
@@ -526,14 +638,15 @@ ALTER ROLE flashx CREATEDB;
 python manage.py test tests --settings=config.settings.test
 ```
 
-The 131 tests cover:
+The 156 tests cover:
 
-- **Accounts:** auth and token rotation, password reset, profile edits and image replacement, the follow graph, blocking in both directions, People you may know.
+- **Accounts:** auth and token rotation, password reset by link and by 6-digit code (expiry, attempt limit), profile edits and image replacement, the follow graph, blocking in both directions, People you may know.
 - **Media:** upload signing, ownership checks, size/type/duration limits.
 - **Posts:** visibility, feed pagination and query count, likes, saves and shares, comment threading and deletion rights.
 - **Stories and reels:** stories (tray, expiry, reactions, replies, viewers) and reels (distinct views, ranked For You with refresh shuffles).
 - **Messaging and notifications:** direct and group threads, group membership (leave, add, remove, admin handover), read receipts, mute, soft delete, notifications, push delivery (FCM payloads, muted threads, dead tokens, rollbacks; FCM is mocked).
 - **Discovery and moderation:** search and explore, reports and moderation.
+- **Live, ads and music:** going live, LiveKit token grants, comments, presence, guest invites, stale-host expiry, blocking; ad scheduling and counters; song search with fallback (HTTP mocked) and sounds on posts and reels.
 - **Operations:** the cron endpoint and every admin page.
 
 The suite passes on Python 3.12, 3.13 and 3.14 with no deprecation warnings.
@@ -634,12 +747,27 @@ Push is sent from the API through Firebase Cloud Messaging (HTTP v1). It is off 
 3. Add the key to Vercel as `FCM_SERVICE_ACCOUNT_JSON`. Paste the JSON on one line, or base64 it first: `base64 -i key.json | tr -d '\n'`. Then redeploy.
 4. iOS delivery also needs an APNs key (Apple Developer account) uploaded under *Project settings > Cloud Messaging*.
 
-Every notification the API stores (likes, comments, follows, mentions, tags, story reactions and replies, messages, shares) is pushed to the recipient's phones after the database commit.
+Every notification the API stores (likes, comments, follows, follow requests, mentions, tags, story reactions and replies, messages, group invites, missed calls, shares) is pushed to the recipient's phones after the database commit, unless the recipient turned that group off in `notification_prefs`.
+
+FCM also carries the real-time layer: small data-only messages (`sync: message | message_deleted | conversation | call | ...`, ids only, no content) tell open apps to fetch the change. Chat, the chat list, unread badges, groups and call signalling update within a second when push is configured, and fall back to polling when it is not.
 
 - Muted conversations, blocked users and your own actions are never pushed.
 - Messages go to the high-priority `flashx_messages` channel. Everything else goes to `flashx_activity`.
 - Both channels play the bundled `flashx_notification` sound.
 - Tokens that Firebase reports as dead are deleted automatically.
+
+### Live video (LiveKit)
+
+1. Create a free project at <https://cloud.livekit.io>.
+2. In *Settings > Keys*, create an API key. Copy the WebSocket URL, the key and the secret.
+3. Add `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` to Vercel and redeploy.
+4. `GET /api/live/` now returns `"available": true` and the Go Live button works in the app. Voice and video calls use the same project.
+
+`tools/e2e/live_e2e.py` and `tools/e2e/calls_e2e.py` run a full broadcast and a full call against a real LiveKit server (see `tools/e2e/README.md`).
+
+If Go Live fails in the app: a `404` on `POST /api/live/` means the server is running an older deploy without the live app (redeploy and run `python manage.py migrate`); `503 live_unavailable` means the three `LIVEKIT_*` variables are missing.
+
+The secret never leaves the server. The app only receives short-lived room tokens.
 
 ### Linux VPS
 

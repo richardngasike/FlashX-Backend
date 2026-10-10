@@ -31,9 +31,28 @@ def unblock(blocker, target) -> bool:
     return bool(deleted)
 
 
-def ensure_not_blocked(a, b, message="You can't interact with this account."):
-    """Raise when either user has blocked the other."""
-    from .selectors import is_blocked_between
+UNAVAILABLE_MESSAGE = "This account isn't available."
 
-    if is_blocked_between(a, b):
+
+def unavailable():
+    """The error a blocked person gets: identical to a deleted or deactivated account, so the block stays private."""
+    return ServiceError(UNAVAILABLE_MESSAGE, code="user_unavailable", status_code=404)
+
+
+def ensure_not_blocked(actor, target, message="Unblock this account to continue."):
+    """
+    Raise when either user has blocked the other. The person who blocked gets
+    ``message`` (they know); the blocked person gets the generic "unavailable"
+    error, never a hint that they were blocked.
+    """
+    if actor is None or target is None or actor.pk == target.pk:
+        return
+    rows = set(
+        Block.objects.filter(Q(blocker=actor, blocked=target) | Q(blocker=target, blocked=actor)).values_list(
+            "blocker_id", flat=True
+        )
+    )
+    if actor.pk in rows:
         raise ServiceError(message, code="blocked", status_code=403)
+    if target.pk in rows:
+        raise unavailable()

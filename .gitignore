@@ -16,3 +16,7 @@ htmlcov/
 # Build output
 staticfiles/
 .vercel/
+
+# Service-account keys (Firebase etc.) never go in the repo
+*firebase-adminsdk*.json
+*service-account*.json

@@ -14,6 +14,7 @@ from .models import ConversationParticipant, Message
 from .serializers import (
     ConversationSerializer,
     GroupMembersSerializer,
+    GroupUpdateSerializer,
     MessageSerializer,
     MuteSerializer,
     SendMessageSerializer,
@@ -23,7 +24,7 @@ from .serializers import (
 
 def _conversation_payload(request, conversations):
     ids = [c.last_message_id for c in conversations if getattr(c, "last_message_id", None)]
-    last = {m.pk: m for m in Message.objects.filter(pk__in=ids)}
+    last = {m.pk: m for m in Message.objects.filter(pk__in=ids).select_related("sender")}
     ctx = {"request": request, "last_messages": last}
     return ConversationSerializer(conversations, many=True, context=ctx).data
 
@@ -92,7 +93,7 @@ class ConversationListView(APIView):
 
 
 class ConversationCursor(FeedCursorPagination):
-    ordering = ("-last_message_at", "-created_at")
+    ordering = ("-activity_at", "-created_at")
     page_size = 25
 
 
@@ -131,10 +132,23 @@ class ConversationMessagesView(APIView):
 
 
 class ConversationDetailView(APIView):
+    """
+    GET   /api/messages/{id}/info/  one conversation
+    PATCH /api/messages/{id}/info/  group admin: {"title": "...", "image_id": 12} or {"remove_image": true}
+    """
+
     serializer_class = ConversationSerializer
 
     def get(self, request, conversation_id):
         convo = get_object_or_404(selectors.conversations_for(request.user), pk=conversation_id)
+        return Response(_conversation_payload(request, [convo])[0])
+
+    @extend_schema(request=GroupUpdateSerializer)
+    def patch(self, request, conversation_id):
+        s = GroupUpdateSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        services.update_group(request.user, conversation_id, **s.validated_data)
+        convo = selectors.conversations_for(request.user).get(pk=conversation_id)
         return Response(_conversation_payload(request, [convo])[0])
 
 
@@ -157,11 +171,26 @@ class MuteView(APIView):
 
 
 class MessageDeleteView(APIView):
+    """
+    DELETE /api/messages/message/{id}/?for=everyone  sender only: "Message deleted" for all members (default)
+    DELETE /api/messages/message/{id}/?for=me        hide it from your own view only
+    """
+
     serializer_class = MessageSerializer
 
     def delete(self, request, pk):
-        msg = get_object_or_404(Message.objects.filter(conversation__memberships__user=request.user).distinct(), pk=pk)
-        services.delete_message(request.user, msg)
+        msg = get_object_or_404(
+            Message.objects.filter(conversation__memberships__user=request.user)
+            .select_related("conversation")
+            .distinct(),
+            pk=pk,
+        )
+        body = request.data if isinstance(request.data, dict) else {}
+        scope = request.query_params.get("for") or body.get("for") or "everyone"
+        if scope == "me":
+            services.delete_message_for_me(request.user, msg)
+        else:
+            services.delete_message(request.user, msg)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
