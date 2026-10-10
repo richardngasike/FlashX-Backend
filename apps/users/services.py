@@ -41,6 +41,12 @@ def _hash_code(user_id, code: str) -> str:
     return hmac.new(settings.SECRET_KEY.encode(), f"{user_id}:{code}".encode(), hashlib.sha256).hexdigest()
 
 
+def email_delivery_enabled() -> bool:
+    """False when emails only go to the log (console/dummy backend): nobody receives them."""
+    backend = settings.EMAIL_BACKEND.lower()
+    return "console" not in backend and "dummy" not in backend
+
+
 def send_password_reset(email: str):
     """
     Email a 6-digit code (valid 15 minutes) plus the classic reset link. Silent
@@ -53,6 +59,12 @@ def send_password_reset(email: str):
 
     from .models import PasswordResetCode
 
+    if not email_delivery_enabled():
+        logger.error(
+            "Password reset requested but email delivery is off (EMAIL_BACKEND=%s). "
+            "Set EMAIL_HOST, EMAIL_HOST_USER and EMAIL_HOST_PASSWORD.",
+            settings.EMAIL_BACKEND,
+        )
     user = User.objects.filter(email__iexact=email.strip(), is_active=True).first()
     if user is None:
         return

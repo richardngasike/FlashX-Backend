@@ -138,6 +138,17 @@ class PasswordTests(FlashXTestCase):
         self.assertOk(self.client.post(reverse("auth-password-reset"), {"email": "nobody@example.com"}))
         self.assertEqual(len(mail.outbox), 0)
 
+    def test_email_delivery_flag(self):
+        from django.test import override_settings
+
+        from apps.users.services import email_delivery_enabled
+
+        with override_settings(EMAIL_BACKEND="django.core.mail.backends.console.EmailBackend"):
+            self.assertFalse(email_delivery_enabled())
+            self.assertFalse(self.assertOk(self.client.get(reverse("health")))["features"]["email"])
+        with override_settings(EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend"):
+            self.assertTrue(email_delivery_enabled())
+
     def test_change_password(self):
         self.auth(self.user)
         self.assertError(

@@ -25,6 +25,7 @@ class HealthView(APIView):
         from apps.live.livekit import is_configured as livekit_configured
         from apps.music.services import provider_names
         from apps.notifications.push import is_enabled as push_enabled
+        from apps.users.services import email_delivery_enabled
 
         video = livekit_configured()
         pending = _pending_migrations() if db_ok else None
@@ -37,7 +38,13 @@ class HealthView(APIView):
                 "migrations_pending": pending,
                 "push": push_enabled(),
                 # What this deployment can do; the app reads it to explain missing setup precisely.
-                "features": {"live": video, "calls": video, "push": push_enabled(), "music": provider_names()},
+                "features": {
+                    "live": video,
+                    "calls": video,
+                    "push": push_enabled(),
+                    "music": provider_names(),
+                    "email": email_delivery_enabled(),
+                },
                 "api_version": API_VERSION,
             },
             status=200 if healthy else 503,

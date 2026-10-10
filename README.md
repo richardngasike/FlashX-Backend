@@ -232,8 +232,9 @@ All settings come from environment variables: `.env` locally, or *Project Settin
 
 | Variable | Default | Notes |
 |---|---|---|
-| `EMAIL_BACKEND` | console | The console backend prints emails to the server log. Use `django.core.mail.backends.smtp.EmailBackend` in production |
-| `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS` | empty, `587`, empty, empty, `True` | SMTP connection |
+| `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` | empty, `587`, empty, empty | SMTP connection. Setting `EMAIL_HOST` turns on SMTP delivery; blank means emails only go to the server log. Spaces in Gmail app passwords are ignored. `health/` reports `features.email` |
+| `EMAIL_USE_TLS`, `EMAIL_USE_SSL`, `EMAIL_TIMEOUT` | TLS on 587, SSL on 465, `15` | |
+| `EMAIL_BACKEND` | automatic | Only to override (an `EMAIL_BACKEND=...console...` left over from an old `.env` keeps delivery off) |
 | `DEFAULT_FROM_EMAIL` | `FlashX <no-reply@flashx.app>` | |
 | `PASSWORD_RESET_URL` | `flashx://reset-password?uid={uid}&token={token}` | Link in reset emails; `{uid}` and `{token}` are filled in |
 
@@ -244,7 +245,6 @@ Password reset sends a 6-digit code (valid 15 minutes, 5 attempts) and the link.
 3. Set in Vercel, then redeploy:
 
 ```
-EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
 EMAIL_HOST=smtp.gmail.com
 EMAIL_PORT=587
 EMAIL_USE_TLS=True
@@ -698,7 +698,7 @@ Any PostgreSQL 14+ provider works; keep it in the same region as the function.
 | `CLOUDINARY_ROOT_FOLDER` | `flashx` for Production, `flashx-preview` for Preview |
 | `CRON_SECRET` | New value from `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 | `ADMIN_URL` | Something other than `admin/`, e.g. `control-7f3a/` |
-| `EMAIL_BACKEND` and the SMTP variables | Needed for password-reset emails. Without them, emails only appear in the function logs |
+| `EMAIL_HOST`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL` | Needed for password-reset emails. Without them, codes only appear in the function logs. Remove any `EMAIL_BACKEND` set to the console backend |
 | `DB_CONN_MAX_AGE`, limits, throttles | Optional; defaults apply |
 
 You do not need `ALLOWED_HOSTS` for `*.vercel.app` or your custom domain.

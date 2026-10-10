@@ -258,12 +258,25 @@ LIVEKIT = {
 # ---------------------------------------------------------------------------
 # Email (password reset)
 # ---------------------------------------------------------------------------
-EMAIL_BACKEND = config("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
-EMAIL_HOST = config("EMAIL_HOST", default="")
+EMAIL_HOST = config("EMAIL_HOST", default="").strip()
+# SMTP as soon as a host is configured; the console backend (prints to the log,
+# delivers nothing) only when no SMTP server is set at all.
+EMAIL_BACKEND = config(
+    "EMAIL_BACKEND",
+    default=(
+        "django.core.mail.backends.smtp.EmailBackend"
+        if EMAIL_HOST
+        else "django.core.mail.backends.console.EmailBackend"
+    ),
+)
 EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
-EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
-EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
-EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="").strip()
+# Gmail shows app passwords in groups of four ("abcd efgh ..."); the spaces are not part of it.
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="").replace(" ", "")
+EMAIL_USE_SSL = config("EMAIL_USE_SSL", default=EMAIL_PORT == 465, cast=bool)
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=not EMAIL_USE_SSL, cast=bool)
+# Never let a slow SMTP server hold a request until the function times out.
+EMAIL_TIMEOUT = config("EMAIL_TIMEOUT", default=15, cast=int)
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="FlashX <no-reply@flashx.app>")
 
 # ---------------------------------------------------------------------------
