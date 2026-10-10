@@ -2,6 +2,8 @@
 Django>=5.2.8,<5.3
 djangorestframework>=3.16,<3.18
 djangorestframework-simplejwt>=5.5,<6
+# LiveKit room tokens (also a simplejwt dependency; pinned here because we import it)
+PyJWT>=2.8
 django-cors-headers>=4.7,<5
 django-filter>=25.1
 drf-spectacular>=0.28

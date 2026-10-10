@@ -539,7 +539,7 @@ Posts and reels take `sound_id` (`"123"` for a stored sound, `"jamendo:456"` for
 | GET | `explore/categories/`, `explore/hashtags/{name}/` | |
 | POST | `reports/` | `target_type` (`post\|reel\|comment\|user`), `target_id, reason, details?` |
 | GET | `reports/reasons/` | Reason list for the report sheet |
-| GET | `health/` | Liveness, database and push check (no auth). `features` reports `live`, `calls`, `push` and `music`; `api_version` is 3 |
+| GET | `health/` | Liveness, database and push check (no auth). `migrations_pending` > 0 (status 503) means the deploy has migrations the database lacks, so most requests fail with 500 until `manage.py migrate` runs. `features` reports `live`, `calls`, `push` and `music`; `api_version` is 3 |
 | GET | `cron/maintenance/` | Scheduled clean-up; needs `Authorization: Bearer <CRON_SECRET>` |
 
 ## 8. Media uploads

@@ -95,5 +95,8 @@ def share_user(request, username):
     )
     bio = user.bio if not user.is_private else "This account is private."
     return _render(
-        f"{user.full_name or user.username} (@{user.username})", bio or "On FlashX.", avatar, f"flashx://open/u/{user.username}"
+        f"{user.full_name or user.username} (@{user.username})",
+        bio or "On FlashX.",
+        avatar,
+        f"flashx://open/u/{user.username}",
     )

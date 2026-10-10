@@ -421,6 +421,24 @@ class LiveKitAdminTokenTests(FlashXTestCase):
         self.assertIn("features", data)
         self.assertEqual(data["features"]["live"], livekit.is_configured())
 
+    def test_health_reports_pending_migrations(self):
+        from unittest import mock
+
+        from apps.core import views as core_views
+
+        self.assertEqual(self.assertOk(self.client.get(reverse("health")))["migrations_pending"], 0)
+        with (
+            mock.patch.object(core_views, "_schema_current", False),
+            mock.patch(
+                "django.db.migrations.executor.MigrationExecutor.migration_plan", return_value=[object(), object()]
+            ),
+        ):
+            response = self.client.get(reverse("health"))
+        self.assertEqual(response.status_code, 503)
+        details = response.json()["error"]["details"]
+        self.assertEqual(details["migrations_pending"], 2)
+        self.assertEqual(details["status"], "degraded")
+
 
 # ---------------------------------------------------------------------------
 # Sounds
