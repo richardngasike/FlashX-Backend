@@ -100,16 +100,18 @@ class VisibilityAndFeedTests(FlashXTestCase):
         hidden = self.make_post(self.friend, "bad")
         Post.objects.filter(pk=hidden.pk).update(is_hidden=True)
         visible = self.make_post(self.friend, "good")
-        ids = [p["id"] for p in self.assertOk(self.client.get(reverse("posts-feed")))["results"]]
-        self.assertEqual(ids, [visible.id])
+        for mode in ("following", "for_you"):
+            ids = [p["id"] for p in self.assertOk(self.client.get(reverse("posts-feed"), {"feed": mode}))["results"]]
+            self.assertEqual(ids, [visible.id])
         User.objects.filter(pk=self.friend.pk).update(is_active=False)
-        self.assertEqual(self.assertOk(self.client.get(reverse("posts-feed")))["results"], [])
+        self.assertEqual(self.assertOk(self.client.get(reverse("posts-feed"), {"feed": "following"}))["results"], [])
+        self.assertEqual(self.assertOk(self.client.get(reverse("posts-feed"), {"seed": "x"}))["results"], [])
 
     def test_feed_contains_followed_and_own_posts_newest_first_with_cursor(self):
         own = self.make_post(self.me, "mine")
         friend_posts = [self.make_post(self.friend, f"p{i}") for i in range(4)]
         self.make_post(self.stranger, "nope")
-        page1 = self.assertOk(self.client.get(reverse("posts-feed"), {"page_size": 3}))
+        page1 = self.assertOk(self.client.get(reverse("posts-feed"), {"page_size": 3, "feed": "following"}))
         self.assertEqual([p["id"] for p in page1["results"]], [p.id for p in friend_posts[:0:-1]])
         self.assertTrue(page1["results"][0]["author"]["is_following"])
         page2 = self.assertOk(self.client.get(page1["next"]))
@@ -136,7 +138,7 @@ class VisibilityAndFeedTests(FlashXTestCase):
             self.make_post(self.friend, f"#t{i}", media_ids=[self.make_asset(self.friend).id])
         # Constant regardless of page size: posts (+flags), media, tagged users, hashtags.
         with self.assertNumQueries(4):
-            self.client.get(reverse("posts-feed"))
+            self.client.get(reverse("posts-feed"), {"feed": "following"})
 
 
 class EngagementTests(FlashXTestCase):

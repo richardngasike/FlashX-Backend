@@ -431,7 +431,7 @@ Purposes: `avatar`, `cover` and `group` (images); `post`, `story` and `message` 
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `posts/feed/` | Followed accounts plus your own posts |
+| GET | `posts/feed/?seed=` | Ranked For you feed: people you follow, your own posts and public discovery, scored by engagement, freshness, relationship and interest (authors and categories you engage with), with posts you already liked or saw at the top of your last refresh stepping back and authors spread out. Send a new `seed` on each pull-to-refresh for a fresh mix; `next` keeps the seed so paging is stable (rankings are cached 15 minutes per seed). `?feed=following` gives followed accounts and your own posts, newest first |
 | GET | `posts/?author=&username=&hashtag=&category=&tagged=&visibility=&q=&media=only` | `visibility=private` with your own id lists your archive |
 | POST | `posts/` | `caption, location, visibility, category` (slug), `comments_enabled, media_ids[], tagged_user_ids[], mood, music_title, event_title, event_starts_at` |
 | GET / PATCH / DELETE | `posts/{id}/` | Only the author can write. Media cannot change after posting |

@@ -6,10 +6,10 @@ from rest_framework.viewsets import GenericViewSet
 
 from apps.core.engagement import EngagementMixin
 from apps.core.exceptions import ServiceError
-from apps.core.pagination import FeedCursorPagination
+from apps.core.pagination import FeedCursorPagination, RankedFeedPagination
 from apps.core.throttles import ContentCreateThrottle
 
-from . import selectors, services
+from . import ranking, selectors, services
 from .models import Post, PostMedia
 from .serializers import PostSerializer, PostWriteSerializer
 
@@ -21,7 +21,7 @@ class PostViewSet(EngagementMixin, mixins.ListModelMixin, mixins.RetrieveModelMi
     retrieve GET    /api/posts/{id}/
     update   PATCH  /api/posts/{id}/
     destroy  DELETE /api/posts/{id}/
-    feed     GET    /api/posts/feed/
+    feed     GET    /api/posts/feed/?seed=   (ranked; ?feed=following for newest-first)
     """
 
     lookup_value_regex = r"\d+"
@@ -88,9 +88,21 @@ class PostViewSet(EngagementMixin, mixins.ListModelMixin, mixins.RetrieveModelMi
 
     @action(detail=False, methods=["get"])
     def feed(self, request):
-        qs = selectors.home_feed(request.user)
-        page = self.paginate_queryset(qs)
-        return self.get_paginated_response(self.get_serializer(page, many=True).data)
+        """
+        GET /api/posts/feed/?seed=<per refresh>  ranked For you feed (followed people plus discovery)
+        GET /api/posts/feed/?feed=following      only people you follow, newest first
+        """
+        user = request.user
+        if request.query_params.get("feed") == "following":
+            qs = selectors.home_feed(user)
+            page = self.paginate_queryset(qs)
+            return self.get_paginated_response(self.get_serializer(page, many=True).data)
+        visible = selectors.visible_posts(user)
+        ids = ranking.ranked_ids(user, visible, request.query_params.get("seed"))
+        paginator = RankedFeedPagination()
+        page_ids = paginator.paginate_queryset(ids, request, view=self)
+        posts = ranking.page_posts(page_ids, selectors.with_relations(visible, user))
+        return paginator.get_paginated_response(self.get_serializer(posts, many=True).data)
 
 
 class LikedCursor(FeedCursorPagination):
