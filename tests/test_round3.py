@@ -644,6 +644,31 @@ class OpenverseSoundTests(FlashXTestCase):
         self.assertEqual(params["category"], "music")
         self.assertNotIn("by-nc", params["license"].split(","))
 
+    def test_jamendo_mp3_streams_without_extension_are_kept(self):
+        jamendo = openverse_track("5b3f8c3e-4c0a-4bfa-9d4e-6f7a1a2b3c4d", "Jamendo Stream", filetype="mp32")
+        jamendo["url"] = "https://prod-1.storage.jamendo.com/?trackid=123&format=mp31&from=app"
+        no_type = openverse_track("6b3f8c3e-4c0a-4bfa-9d4e-6f7a1a2b3c4d", "No Type", filetype="")
+        no_type["url"] = "https://prod-1.storage.jamendo.com/?trackid=456&format=mp31"
+        flac = openverse_track("7b3f8c3e-4c0a-4bfa-9d4e-6f7a1a2b3c4d", "Flac", filetype="flac")
+        with mock.patch.object(music, "_openverse", return_value={"results": [jamendo, no_type, flac]}):
+            data = self.assertOk(self.client.get(reverse("music-search"), {"q": "stream"}))
+        titles = [t["title"] for t in data["catalogue"]]
+        self.assertEqual(titles, ["Jamendo Stream", "No Type"])
+
+    def test_rate_limited_search_serves_last_good_results(self):
+        with mock.patch.object(music, "_openverse", return_value={"results": [openverse_track()]}):
+            with mock.patch.object(music.cache, "set", wraps=music.cache.set) as setter:
+                self.assertOk(self.client.get(reverse("music-search"), {"q": "savanna"}))
+        fresh_key = next(
+            c.args[0]
+            for c in setter.call_args_list
+            if c.args[0].startswith("music:openverse:category=") and not c.args[0].endswith(":stale")
+        )
+        music.cache.delete(fresh_key)
+        with mock.patch.object(music, "_openverse", side_effect=RuntimeError("HTTP 429")):
+            data = self.assertOk(self.client.get(reverse("music-search"), {"q": "savanna"}))
+        self.assertEqual([t["title"] for t in data["catalogue"]], ["Savanna Sunrise"])
+
     def test_post_with_openverse_sound_is_reusable(self):
         with mock.patch.object(music, "_openverse", return_value=openverse_track()) as api:
             post = self.assertOk(

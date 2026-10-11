@@ -279,7 +279,7 @@ Both keys blank: `messages/gifs/` returns `enabled: false` and the app hides GIF
 |---|---|---|
 | `JAMENDO_CLIENT_ID` | empty | Client id from <https://devportal.jamendo.com>. Blank hides the song catalogue; original sounds still work |
 | `MUSIC_OPENVERSE` | `True` | Openverse (api.openverse.org) music search: openly licensed songs (CC0, public domain, CC BY, CC BY-SA) from Jamendo, ccMixter, Freesound, Wikimedia and others. Works without a key |
-| `OPENVERSE_CLIENT_ID`, `OPENVERSE_CLIENT_SECRET` | empty | Optional. Register at `POST https://api.openverse.org/v1/auth_tokens/register/` for a higher rate limit than anonymous access |
+| `OPENVERSE_CLIENT_ID`, `OPENVERSE_CLIENT_SECRET` | empty | Strongly recommended on Vercel: anonymous Openverse access is rate limited per IP, and Vercel servers share IPs, so searches can come back empty. Register once (free): `curl -X POST https://api.openverse.org/v1/auth_tokens/register/ -H "Content-Type: application/json" -d '{"name":"FlashX","description":"Licensed music for user posts","email":"you@example.com"}'`, confirm the email Openverse sends, then set both values. `GET api/health/` shows `features.music_status` (`openverse_authenticated`, `openverse_last_error`, e.g. `HTTP 429`) |
 | `MUSIC_COMMERCIAL_USE` | `True` | Keep `True` while the app shows ads: only tracks whose licence allows commercial use (no `NC`) are offered. Tracks with `ND` are never offered because posts mix and trim them |
 
 ### Media and content limits

@@ -202,7 +202,11 @@ def _fetch_jamendo_track(track_id) -> dict:
 OPENVERSE_API = "https://api.openverse.org/v1"
 OPENVERSE_PAGE_MAX = 20  # anonymous page size limit
 OPENVERSE_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-PLAYABLE_TYPES = {"mp3", "m4a", "aac", "wav"}
+# Formats both Android and iOS play. Openverse lists Jamendo's MP3 streams as
+# "mp31"/"mp32" with URLs that have no file extension (".../?trackid=1&format=mp31").
+PLAYABLE_TYPES = {"mp3", "mp31", "mp32", "mpeg", "m4a", "aac", "wav"}
+OPENVERSE_TIMEOUT = 9
+STALE_SECONDS = 7 * 24 * 3600
 LICENCE_NAMES = {
     "cc0": "CC0",
     "pdm": "Public domain",
@@ -261,9 +265,26 @@ def _openverse(path, params=None):
     token = _openverse_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = requests.get(f"{OPENVERSE_API}{path}", params=params or {}, headers=headers, timeout=TIMEOUT)
+    r = requests.get(f"{OPENVERSE_API}{path}", params=params or {}, headers=headers, timeout=OPENVERSE_TIMEOUT)
+    if r.status_code >= 400:
+        # Kept for the health check: 429 means the anonymous rate limit (set OPENVERSE_CLIENT_ID/SECRET).
+        cache.set("music:openverse:last_error", f"HTTP {r.status_code}", 24 * 3600)
     r.raise_for_status()
     return r.json()
+
+
+def _filetype(item) -> str:
+    """The audio format, from Openverse's field or, failing that, the URL."""
+    from urllib.parse import parse_qs, urlparse
+
+    ft = (item.get("filetype") or "").lower().strip()
+    if ft:
+        return ft
+    parts = urlparse(item.get("url") or "")
+    last = parts.path.rsplit("/", 1)[-1]
+    if "." in last:
+        return last.rsplit(".", 1)[-1].lower()
+    return (parse_qs(parts.query).get("format") or [""])[0].lower()
 
 
 def _openverse_ok(item) -> bool:
@@ -272,8 +293,7 @@ def _openverse_ok(item) -> bool:
     if item.get("mature"):
         return False
     url = item.get("url") or ""
-    filetype = (item.get("filetype") or url.rsplit(".", 1)[-1]).lower()
-    return url.startswith("https://") and filetype in PLAYABLE_TYPES
+    return url.startswith("https://") and _filetype(item) in PLAYABLE_TYPES
 
 
 def _openverse_payload(item) -> dict:
@@ -325,9 +345,22 @@ def _search_openverse(query, genre, limit) -> list:
         tracks = [_openverse_payload(r) for r in rows if _openverse_ok(r)]
     except Exception as exc:  # noqa: BLE001 - the picker still offers other sounds
         logger.warning("Openverse search failed: %s", exc)
-        return []
+        # Rate limited or down: the last good answer for this search is better than nothing.
+        return (cache.get(key + ":stale") or [])[:limit]
     cache.set(key, tracks, CACHE_SECONDS)
+    if tracks:
+        cache.set(key + ":stale", tracks, STALE_SECONDS)
+        cache.delete("music:openverse:last_error")
     return tracks[:limit]
+
+
+def catalogue_status() -> dict:
+    """For the health check: which song sources are on and the last Openverse error, if any."""
+    return {
+        "providers": provider_names(),
+        "openverse_authenticated": bool(_cfg().get("OPENVERSE_CLIENT_ID") and _cfg().get("OPENVERSE_CLIENT_SECRET")),
+        "openverse_last_error": cache.get("music:openverse:last_error"),
+    }
 
 
 def _fetch_openverse_track(track_id) -> dict:

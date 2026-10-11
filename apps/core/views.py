@@ -23,7 +23,7 @@ class HealthView(APIView):
         except Exception:  # pragma: no cover - reported, not raised
             db_ok = False
         from apps.live.livekit import is_configured as livekit_configured
-        from apps.music.services import provider_names
+        from apps.music.services import catalogue_status, provider_names
         from apps.notifications.push import is_enabled as push_enabled
         from apps.users.services import email_delivery_enabled
 
@@ -43,6 +43,7 @@ class HealthView(APIView):
                     "calls": video,
                     "push": push_enabled(),
                     "music": provider_names(),
+                    "music_status": catalogue_status(),
                     "email": email_delivery_enabled(),
                 },
                 "api_version": API_VERSION,
