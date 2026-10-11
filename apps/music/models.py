@@ -1,6 +1,9 @@
 from django.conf import settings
 from django.db import models
 
+# Sources whose sounds can be added to new posts.
+USABLE_SOURCES = ("jamendo", "openverse", "flashx")
+
 
 class Sound(models.Model):
     """
@@ -11,6 +14,7 @@ class Sound(models.Model):
 
     class Source(models.TextChoices):
         JAMENDO = "jamendo", "Jamendo"
+        OPENVERSE = "openverse", "Openverse (Creative Commons)"
         FLASHX = "flashx", "Original sound"
         # Earlier builds attached 30-second store previews; kept for old posts, not offered any more.
         DEEZER = "deezer", "Deezer preview (legacy)"

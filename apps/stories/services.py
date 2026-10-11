@@ -16,9 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 @transaction.atomic
-def create_story(author, *, media_id, caption=""):
+def create_story(author, *, media_id, caption="", sound_id=None, **mix):
+    from apps.music import services as music
+
+    sound = music.resolve(author, sound_id) if sound_id else None
     asset = claim_one(author, media_id, purposes={MediaPurpose.STORY})
-    return Story.objects.create(
+    story = Story.objects.create(
         author=author,
         asset=asset,
         cloudinary_url=asset.secure_url,
@@ -28,7 +31,11 @@ def create_story(author, *, media_id, caption=""):
         duration=asset.duration,
         width=asset.width,
         height=asset.height,
+        sound=sound,
+        **(music.clean_mix(mix) if sound else {}),
     )
+    music.count_use(sound)
+    return story
 
 
 def mark_viewed(story, viewer) -> bool:
@@ -89,8 +96,12 @@ def reply(story, user, content):
 
 @transaction.atomic
 def delete_story(story):
+    from apps.music.services import release_use
+
     purge_target(TargetType.STORY, [story.pk])
+    sound_id = story.sound_id
     story.delete()  # Asset removed from Cloudinary via signal.
+    release_use(sound_id)
 
 
 def purge_expired(batch_size=500) -> int:
@@ -100,8 +111,12 @@ def purge_expired(batch_size=500) -> int:
         ids = list(Story.objects.filter(expires_at__lte=timezone.now()).values_list("id", flat=True)[:batch_size])
         if not ids:
             return total
+        from apps.music.services import release_use
+
         with transaction.atomic():
             purge_target(TargetType.STORY, ids)
             for story in Story.objects.filter(id__in=ids):
+                sound_id = story.sound_id
                 story.delete()
+                release_use(sound_id)
         total += len(ids)

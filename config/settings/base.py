@@ -244,6 +244,10 @@ FCM = {"SERVICE_ACCOUNT_JSON": config("FCM_SERVICE_ACCOUNT_JSON", default="")}
 MUSIC = {
     "JAMENDO_CLIENT_ID": config("JAMENDO_CLIENT_ID", default=""),
     "COMMERCIAL_USE": config("MUSIC_COMMERCIAL_USE", default=True, cast=bool),
+    # Openverse works without credentials; registering raises the rate limit.
+    "OPENVERSE_ENABLED": config("MUSIC_OPENVERSE", default=True, cast=bool),
+    "OPENVERSE_CLIENT_ID": config("OPENVERSE_CLIENT_ID", default=""),
+    "OPENVERSE_CLIENT_SECRET": config("OPENVERSE_CLIENT_SECRET", default=""),
 }
 
 # ---------------------------------------------------------------------------

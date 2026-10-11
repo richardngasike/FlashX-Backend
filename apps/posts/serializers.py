@@ -154,8 +154,8 @@ class PostWriteSerializer(serializers.Serializer):
     comments_enabled = serializers.BooleanField(required=False)
     mood = serializers.ChoiceField(choices=Mood.choices, required=False, allow_blank=True)
     music_title = serializers.CharField(required=False, allow_blank=True, max_length=120)
-    # "123" (a FlashX sound) or "jamendo:456" (catalogue track); null removes the sound.
-    sound_id = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=40)
+    # "123" (a FlashX sound), "jamendo:456" or "openverse:<uuid>" (catalogue track); null removes the sound.
+    sound_id = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=64)
     # Previous app version sent the whole sound object.
     sound = serializers.JSONField(required=False, allow_null=True, write_only=True)
     sound_start = serializers.FloatField(required=False, min_value=0, max_value=3600)

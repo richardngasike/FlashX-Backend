@@ -30,6 +30,11 @@ class Story(models.Model):
     duration = models.FloatField(null=True, blank=True)
     width = models.PositiveIntegerField(null=True, blank=True)
     height = models.PositiveIntegerField(null=True, blank=True)
+    # Optional song played over the story (same library as posts and reels).
+    sound = models.ForeignKey("music.Sound", null=True, blank=True, on_delete=models.SET_NULL, related_name="stories")
+    sound_start = models.FloatField(default=0)
+    sound_volume = models.FloatField(default=1)
+    original_volume = models.FloatField(default=1)
     views_count = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(default=default_expiry, db_index=True)

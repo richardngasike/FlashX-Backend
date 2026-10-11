@@ -1,7 +1,7 @@
 """
 Sounds for posts and reels.
 
-Two kinds of audio are offered:
+Three kinds of audio are offered:
 
 * **Catalogue tracks from Jamendo** (independent artists, every track under a
   Creative Commons licence). Tracks are streamed from Jamendo, never copied
@@ -15,14 +15,23 @@ Two kinds of audio are offered:
   Jamendo API itself must be used under a commercial agreement with Jamendo.
   Set ``JAMENDO_CLIENT_ID`` to switch the catalogue on.
 
+* **Openverse music** (api.openverse.org, run by WordPress): openly licensed
+  songs indexed from Jamendo, ccMixter, Freesound, Wikimedia and others. Works
+  without a key (optional OPENVERSE_CLIENT_ID / OPENVERSE_CLIENT_SECRET raise
+  the rate limit). Only CC0, public domain, CC BY and CC BY-SA tracks are
+  offered (plus NC when commercial use is off), streamed from the source with
+  the credit line the licence requires.
+
 * **Original sounds**: the soundtrack of a FlashX video, reusable by others
   unless the owner turns that off.
 
 YouTube, Spotify and store previews (Deezer, iTunes) are deliberately not
-used: none of them licenses its audio for putting under user videos.
+used: none of them licenses its audio for putting under user videos, and the
+YouTube terms forbid separating audio from its videos.
 """
 
 import logging
+import re
 
 from django.conf import settings
 from django.core.cache import cache
@@ -30,7 +39,7 @@ from django.db.models import F, Q
 
 from apps.core.exceptions import ServiceError
 
-from .models import Sound
+from .models import USABLE_SOURCES, Sound
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +74,21 @@ def jamendo_enabled() -> bool:
     return bool(_cfg().get("JAMENDO_CLIENT_ID"))
 
 
+def openverse_enabled() -> bool:
+    return bool(_cfg().get("OPENVERSE_ENABLED", True))
+
+
 def provider_names() -> list:
-    names = ["original"]
+    names = []
     if jamendo_enabled():
-        names.insert(0, "jamendo")
-    return names
+        names.append("jamendo")
+    if openverse_enabled():
+        names.append("openverse")
+    return names + ["original"]
+
+
+def catalogue_enabled() -> bool:
+    return jamendo_enabled() or openverse_enabled()
 
 
 # ---------------------------------------------------------------------------
@@ -178,8 +197,163 @@ def _fetch_jamendo_track(track_id) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Openverse
+# ---------------------------------------------------------------------------
+OPENVERSE_API = "https://api.openverse.org/v1"
+OPENVERSE_PAGE_MAX = 20  # anonymous page size limit
+OPENVERSE_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+PLAYABLE_TYPES = {"mp3", "m4a", "aac", "wav"}
+LICENCE_NAMES = {
+    "cc0": "CC0",
+    "pdm": "Public domain",
+    "by": "CC BY",
+    "by-sa": "CC BY-SA",
+    "by-nc": "CC BY-NC",
+    "by-nc-sa": "CC BY-NC-SA",
+}
+SOURCE_NAMES = {
+    "jamendo": "Jamendo",
+    "ccmixter": "ccMixter",
+    "freesound": "Freesound",
+    "wikimedia_audio": "Wikimedia Commons",
+    "freemusicarchive": "Free Music Archive",
+}
+
+
+def _openverse_licences() -> list:
+    allowed = ["cc0", "pdm", "by", "by-sa"]
+    if not _cfg().get("COMMERCIAL_USE", True):
+        allowed += ["by-nc", "by-nc-sa"]
+    return allowed
+
+
+def _openverse_token() -> str:
+    """Bearer token when OPENVERSE_CLIENT_ID/SECRET are set (higher rate limit), else anonymous."""
+    client_id, secret = _cfg().get("OPENVERSE_CLIENT_ID"), _cfg().get("OPENVERSE_CLIENT_SECRET")
+    if not (client_id and secret):
+        return ""
+    token = cache.get("music:openverse:token")
+    if token:
+        return token
+    import requests
+
+    try:
+        r = requests.post(
+            f"{OPENVERSE_API}/auth_tokens/token/",
+            data={"grant_type": "client_credentials", "client_id": client_id, "client_secret": secret},
+            timeout=TIMEOUT,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as exc:  # noqa: BLE001 - fall back to anonymous access
+        logger.warning("Openverse token request failed: %s", exc)
+        return ""
+    token = data.get("access_token") or ""
+    if token:
+        cache.set("music:openverse:token", token, max(60, int(data.get("expires_in") or 3600) - 120))
+    return token
+
+
+def _openverse(path, params=None):
+    import requests
+
+    headers = {"User-Agent": "FlashX/1.0 (social app; sounds for user posts)"}
+    token = _openverse_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    r = requests.get(f"{OPENVERSE_API}{path}", params=params or {}, headers=headers, timeout=TIMEOUT)
+    r.raise_for_status()
+    return r.json()
+
+
+def _openverse_ok(item) -> bool:
+    if (item.get("license") or "").lower() not in _openverse_licences():
+        return False
+    if item.get("mature"):
+        return False
+    url = item.get("url") or ""
+    filetype = (item.get("filetype") or url.rsplit(".", 1)[-1]).lower()
+    return url.startswith("https://") and filetype in PLAYABLE_TYPES
+
+
+def _openverse_payload(item) -> dict:
+    licence = (item.get("license") or "").lower()
+    version = item.get("license_version") or ""
+    name = LICENCE_NAMES.get(licence, licence.upper())
+    if version and licence not in ("cc0", "pdm"):
+        name = f"{name} {version}"
+    source = SOURCE_NAMES.get(item.get("source") or "", (item.get("source") or "Openverse").replace("_", " ").title())
+    title = (item.get("title") or "Untitled").strip()
+    artist = (item.get("creator") or "").strip()
+    duration = item.get("duration")
+    genres = item.get("genres") or []
+    cover = item.get("thumbnail") or ((item.get("audio_set") or {}).get("thumbnail")) or ""
+    return {
+        "id": f"openverse:{item.get('id')}",
+        "source": "openverse",
+        "title": title,
+        "artist": artist,
+        "cover": cover,
+        "audio_url": item.get("url") or "",
+        "duration": round(duration / 1000, 1) if isinstance(duration, (int, float)) and duration else None,
+        "genre": genres[0] if genres else "",
+        "license_name": name,
+        "license_url": item.get("license_url") or "",
+        "link": item.get("foreign_landing_url") or "",
+        "attribution": f"{title} by {artist or 'unknown artist'} ({source}, {name})",
+        "uses_count": 0,
+        "is_original": False,
+    }
+
+
+def _search_openverse(query, genre, limit) -> list:
+    if not openverse_enabled():
+        return []
+    terms = " ".join(t for t in (query, genre) if t) or "music"
+    params = {
+        "q": terms,
+        "category": "music",
+        "license": ",".join(_openverse_licences()),
+        "page_size": min(OPENVERSE_PAGE_MAX, max(limit, 1) * 2),
+    }
+    key = "music:openverse:" + "|".join(f"{k}={v}" for k, v in sorted(params.items()))
+    cached = cache.get(key)
+    if cached is not None:
+        return cached[:limit]
+    try:
+        rows = _openverse("/audio/", params).get("results") or []
+        tracks = [_openverse_payload(r) for r in rows if _openverse_ok(r)]
+    except Exception as exc:  # noqa: BLE001 - the picker still offers other sounds
+        logger.warning("Openverse search failed: %s", exc)
+        return []
+    cache.set(key, tracks, CACHE_SECONDS)
+    return tracks[:limit]
+
+
+def _fetch_openverse_track(track_id) -> dict:
+    if not openverse_enabled():
+        raise ServiceError("Music is not available right now.", code="music_unavailable", status_code=503)
+    try:
+        item = _openverse(f"/audio/{track_id}/")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Openverse lookup failed: %s", exc)
+        raise ServiceError("Couldn't load that song. Try again.", code="music_unavailable", status_code=503) from exc
+    if not _openverse_ok(item):
+        raise ServiceError("That song can't be used.", code="sound_unavailable")
+    return item
+
+
+# ---------------------------------------------------------------------------
 # Payloads
 # ---------------------------------------------------------------------------
+def _stored_attribution(sound: Sound) -> str:
+    if sound.source == Sound.Source.JAMENDO:
+        return f"{sound.title} by {sound.artist} (Jamendo)"
+    if sound.source == Sound.Source.OPENVERSE:
+        return f"{sound.title} by {sound.artist or 'unknown artist'} ({sound.license_name})"
+    return sound.label
+
+
 def sound_payload(sound: Sound) -> dict:
     return {
         "id": str(sound.pk),
@@ -193,13 +367,11 @@ def sound_payload(sound: Sound) -> dict:
         "license_name": sound.license_name,
         "license_url": sound.license_url,
         "link": sound.link_url,
-        "attribution": (
-            f"{sound.title} by {sound.artist} (Jamendo)" if sound.source == Sound.Source.JAMENDO else sound.label
-        ),
+        "attribution": _stored_attribution(sound),
         "uses_count": sound.uses_count,
         "is_original": sound.source == Sound.Source.FLASHX,
         "owner_id": sound.owner_id,
-        "usable": sound.is_active and sound.source in (Sound.Source.JAMENDO, Sound.Source.FLASHX),
+        "usable": sound.is_active and sound.source in USABLE_SOURCES,
     }
 
 
@@ -222,7 +394,7 @@ def popular_sounds(viewer, limit=20):
     """Most used sounds on FlashX right now (catalogue and original)."""
     from apps.blocks.selectors import exclude_blocked
 
-    qs = Sound.objects.filter(is_active=True, uses_count__gt=0, source__in=[Sound.Source.JAMENDO, Sound.Source.FLASHX])
+    qs = Sound.objects.filter(is_active=True, uses_count__gt=0, source__in=USABLE_SOURCES)
     qs = exclude_blocked(qs.filter(Q(owner__isnull=True) | Q(owner__is_private=False)), viewer, "owner_id")
     return list(qs.order_by("-uses_count", "-created_at")[:limit])
 
@@ -231,22 +403,32 @@ def search(viewer, query="", genre="", limit=30) -> dict:
     query = (query or "").strip()[:100]
     genre = (genre or "").strip()[:40]
     catalogue = _search_jamendo(query, genre, limit)
+    if len(catalogue) < limit:
+        # Openverse also indexes Jamendo: skip songs already listed.
+        seen = {(t["title"].lower(), t["artist"].lower()) for t in catalogue}
+        for t in _search_openverse(query, genre, limit):
+            if (t["title"].lower(), t["artist"].lower()) not in seen:
+                seen.add((t["title"].lower(), t["artist"].lower()))
+                catalogue.append(t)
+        catalogue = catalogue[:limit]
     # Tracks already used on FlashX resolve to their stored id so counts and pages line up.
     if catalogue:
-        stored = {
-            s.external_id: s
-            for s in Sound.objects.filter(
-                source=Sound.Source.JAMENDO, external_id__in=[t["id"].split(":", 1)[1] for t in catalogue]
-            )
-        }
+        by_source = {}
         for t in catalogue:
-            s = stored.get(t["id"].split(":", 1)[1])
-            if s is not None:
-                t["id"] = str(s.pk)
-                t["uses_count"] = s.uses_count
+            source, external = t["id"].split(":", 1)
+            by_source.setdefault(source, []).append(external)
+        stored = {}
+        for source, ids in by_source.items():
+            for snd in Sound.objects.filter(source=source, external_id__in=ids):
+                stored[f"{source}:{snd.external_id}"] = snd
+        for t in catalogue:
+            snd = stored.get(t["id"])
+            if snd is not None:
+                t["id"] = str(snd.pk)
+                t["uses_count"] = snd.uses_count
     originals = [] if genre else [sound_payload(s) for s in original_sounds(viewer, query, limit=10)]
     popular = [] if (query or genre) else [sound_payload(s) for s in popular_sounds(viewer, limit=10)]
-    return {"catalogue": catalogue, "original": originals, "popular": popular, "catalogue_enabled": jamendo_enabled()}
+    return {"catalogue": catalogue, "original": originals, "popular": popular, "catalogue_enabled": catalogue_enabled()}
 
 
 # ---------------------------------------------------------------------------
@@ -254,9 +436,10 @@ def search(viewer, query="", genre="", limit=30) -> dict:
 # ---------------------------------------------------------------------------
 def resolve(user, sound_id) -> Sound:
     """
-    Turn the id the app sends ("123" for a stored sound, "jamendo:456" for a
-    catalogue track) into a usable Sound. Catalogue details are re-read from
-    Jamendo so the client can't attach arbitrary audio.
+    Turn the id the app sends ("123" for a stored sound, "jamendo:456" or
+    "openverse:<uuid>" for a catalogue track) into a usable Sound. Catalogue
+    details are re-read from the provider so the client can't attach
+    arbitrary audio or a track whose licence doesn't allow it.
     """
     raw = str(sound_id or "").strip()
     if not raw:
@@ -270,27 +453,21 @@ def resolve(user, sound_id) -> Sound:
             if not existing.is_active:
                 raise ServiceError("That song can't be used.", code="sound_unavailable")
             return existing
-        p = _track_payload(_fetch_jamendo_track(track_id))
-        sound, _ = Sound.objects.get_or_create(
-            source=Sound.Source.JAMENDO,
-            external_id=track_id,
-            defaults={
-                "title": p["title"][:200],
-                "artist": p["artist"][:200],
-                "cover_url": p["cover"][:500],
-                "audio_url": p["audio_url"][:500],
-                "duration": p["duration"],
-                "genre": p["genre"][:60],
-                "license_name": p["license_name"][:80],
-                "license_url": p["license_url"][:300],
-                "link_url": p["link"][:300],
-            },
-        )
-        return sound
+        return _store_catalogue(Sound.Source.JAMENDO, track_id, _track_payload(_fetch_jamendo_track(track_id)))
+    if raw.startswith("openverse:"):
+        track_id = raw.split(":", 1)[1].lower()
+        if not OPENVERSE_ID.match(track_id):
+            raise ServiceError("That song can't be used.", code="sound_unavailable")
+        existing = Sound.objects.filter(source=Sound.Source.OPENVERSE, external_id=track_id).first()
+        if existing is not None:
+            if not existing.is_active:
+                raise ServiceError("That song can't be used.", code="sound_unavailable")
+            return existing
+        return _store_catalogue(Sound.Source.OPENVERSE, track_id, _openverse_payload(_fetch_openverse_track(track_id)))
     if not raw.isdigit():
         raise ServiceError("That sound can't be used.", code="sound_unavailable")
     sound = Sound.objects.filter(pk=int(raw)).select_related("owner").first()
-    usable = sound is not None and sound.is_active and sound.source in (Sound.Source.JAMENDO, Sound.Source.FLASHX)
+    usable = sound is not None and sound.is_active and sound.source in USABLE_SOURCES
     if not usable:
         raise ServiceError("That sound can't be used.", code="sound_unavailable")
     if sound.owner_id and sound.owner_id != user.pk:
@@ -298,6 +475,25 @@ def resolve(user, sound_id) -> Sound:
 
         if not sound.owner.is_active or sound.owner.is_private or is_blocked_between(user, sound.owner):
             raise ServiceError("That sound can't be used.", code="sound_unavailable")
+    return sound
+
+
+def _store_catalogue(source, external_id, p) -> Sound:
+    sound, _ = Sound.objects.get_or_create(
+        source=source,
+        external_id=external_id,
+        defaults={
+            "title": p["title"][:200],
+            "artist": p["artist"][:200],
+            "cover_url": p["cover"][:500],
+            "audio_url": p["audio_url"][:500],
+            "duration": p["duration"],
+            "genre": p["genre"][:60],
+            "license_name": p["license_name"][:80],
+            "license_url": p["license_url"][:300],
+            "link_url": p["link"][:300],
+        },
+    )
     return sound
 
 

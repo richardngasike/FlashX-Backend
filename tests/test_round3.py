@@ -20,7 +20,28 @@ from apps.notifications.models import DeviceToken, Notification
 from .base import FlashXTestCase
 
 LK = {"URL": "wss://flashx.livekit.cloud", "API_KEY": "APIkey", "API_SECRET": "s" * 40}
-JAMENDO = {"JAMENDO_CLIENT_ID": "test-client", "COMMERCIAL_USE": True}
+JAMENDO = {"JAMENDO_CLIENT_ID": "test-client", "COMMERCIAL_USE": True, "OPENVERSE_ENABLED": False}
+OPENVERSE = {"JAMENDO_CLIENT_ID": "", "COMMERCIAL_USE": True, "OPENVERSE_ENABLED": True}
+OV_ID = "0b3f8c3e-4c0a-4bfa-9d4e-6f7a1a2b3c4d"
+
+
+def openverse_track(track_id=OV_ID, title="Savanna Sunrise", license="by", filetype="mp3", mature=False):
+    return {
+        "id": track_id,
+        "title": title,
+        "creator": "Kito Beats",
+        "url": f"https://prod-1.storage.jamendo.com/download/track/{title.replace(' ', '')}.{filetype}",
+        "filetype": filetype,
+        "duration": 201000,
+        "license": license,
+        "license_version": "4.0",
+        "license_url": f"https://creativecommons.org/licenses/{license}/4.0/",
+        "foreign_landing_url": "https://www.jamendo.com/track/1",
+        "thumbnail": f"https://api.openverse.org/v1/audio/{track_id}/thumb/",
+        "genres": ["afrobeat"],
+        "source": "jamendo",
+        "mature": mature,
+    }
 
 
 def jamendo_track(track_id=1, title="Nairobi Nights", ccnc="false", ccnd="false"):
@@ -555,7 +576,7 @@ class SoundTests(FlashXTestCase):
         )
 
     def test_without_catalogue_only_original_sounds(self):
-        with override_settings(MUSIC={"JAMENDO_CLIENT_ID": ""}):
+        with override_settings(MUSIC={"JAMENDO_CLIENT_ID": "", "OPENVERSE_ENABLED": False}):
             data = self.assertOk(self.client.get(reverse("music-search"), {"q": "x"}))
         self.assertEqual((data["catalogue"], data["catalogue_enabled"]), ([], False))
 
@@ -593,3 +614,88 @@ class SharePageTests(FlashXTestCase):
         self.assertEqual(self.client.get(f"/p/{post.pk}/").status_code, 404)
         self.assertEqual(self.client.get("/u/sharer/").status_code, 200)
         self.assertEqual(self.client.get("/u/nobody-here/").status_code, 404)
+
+
+@override_settings(MUSIC=OPENVERSE)
+class OpenverseSoundTests(FlashXTestCase):
+    def setUp(self):
+        super().setUp()
+        from django.core.cache import cache
+
+        cache.clear()
+        self.user = self.auth(self.make_user("ovmaker"))
+
+    def test_search_without_any_key_returns_licensed_music(self):
+        rows = [
+            openverse_track(),
+            openverse_track("1b3f8c3e-4c0a-4bfa-9d4e-6f7a1a2b3c4d", "No Commercial", license="by-nc"),
+            openverse_track("2b3f8c3e-4c0a-4bfa-9d4e-6f7a1a2b3c4d", "No Derivs", license="by-nd"),
+            openverse_track("3b3f8c3e-4c0a-4bfa-9d4e-6f7a1a2b3c4d", "Ogg Only", filetype="ogg"),
+            openverse_track("4b3f8c3e-4c0a-4bfa-9d4e-6f7a1a2b3c4d", "Mature", mature=True),
+        ]
+        with mock.patch.object(music, "_openverse", return_value={"results": rows}) as api:
+            data = self.assertOk(self.client.get(reverse("music-search"), {"q": "afro"}))
+        self.assertTrue(data["catalogue_enabled"])
+        self.assertEqual([t["title"] for t in data["catalogue"]], ["Savanna Sunrise"])
+        t = data["catalogue"][0]
+        self.assertEqual((t["id"], t["license_name"], t["duration"]), (f"openverse:{OV_ID}", "CC BY 4.0", 201.0))
+        self.assertIn("Kito Beats", t["attribution"])
+        params = api.call_args.args[1]
+        self.assertEqual(params["category"], "music")
+        self.assertNotIn("by-nc", params["license"].split(","))
+
+    def test_post_with_openverse_sound_is_reusable(self):
+        with mock.patch.object(music, "_openverse", return_value=openverse_track()) as api:
+            post = self.assertOk(
+                self.client.post(reverse("posts-list"), {"caption": "x", "sound_id": f"openverse:{OV_ID}"}), 201
+            )
+            api.assert_called_once_with(f"/audio/{OV_ID}/")
+        sound = Sound.objects.get(source="openverse", external_id=OV_ID)
+        self.assertEqual((post["sound"]["id"], post["sound"]["usable"]), (str(sound.pk), True))
+        # A second user reuses it by its stored id, with no provider call.
+        self.auth(self.make_user("ovfan"))
+        with mock.patch.object(music, "_openverse") as api:
+            again = self.assertOk(
+                self.client.post(reverse("posts-list"), {"caption": "y", "sound_id": str(sound.pk)}), 201
+            )
+            api.assert_not_called()
+        self.assertEqual(again["sound"]["id"], str(sound.pk))
+        sound.refresh_from_db()
+        self.assertEqual(sound.uses_count, 2)
+
+    def test_openverse_track_with_disallowed_licence_is_refused(self):
+        with mock.patch.object(music, "_openverse", return_value=openverse_track(license="by-nc-nd")):
+            r = self.client.post(reverse("posts-list"), {"caption": "x", "sound_id": f"openverse:{OV_ID}"})
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(Sound.objects.filter(source="openverse").exists())
+
+    def test_invalid_openverse_id_is_refused_without_network(self):
+        with mock.patch.object(music, "_openverse") as api:
+            r = self.client.post(reverse("posts-list"), {"caption": "x", "sound_id": "openverse:../../etc"})
+            api.assert_not_called()
+        self.assertEqual(r.status_code, 400)
+
+    def test_story_with_sound(self):
+        asset = self.make_asset(self.user, purpose="story")
+        with mock.patch.object(music, "_openverse", return_value=openverse_track()):
+            story = self.assertOk(
+                self.client.post(
+                    reverse("stories-list"),
+                    {"media_id": asset.pk, "sound_id": f"openverse:{OV_ID}", "sound_start": 12, "sound_volume": 0.8},
+                ),
+                201,
+            )
+        self.assertEqual(
+            (story["sound"]["title"], story["sound"]["start"], story["sound"]["volume"]), ("Savanna Sunrise", 12.0, 0.8)
+        )
+        self.assertTrue(story["sound"]["plays_separately"])
+        sound = Sound.objects.get(source="openverse")
+        self.assertEqual(sound.uses_count, 1)
+        self.assertEqual(self.client.delete(reverse("stories-detail", args=[story["id"]])).status_code, 204)
+        sound.refresh_from_db()
+        self.assertEqual(sound.uses_count, 0)
+
+    def test_story_without_sound(self):
+        asset = self.make_asset(self.user, purpose="story")
+        story = self.assertOk(self.client.post(reverse("stories-list"), {"media_id": asset.pk}), 201)
+        self.assertIsNone(story["sound"])

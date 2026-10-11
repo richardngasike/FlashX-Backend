@@ -1,5 +1,5 @@
 from .base import *  # noqa: F401,F403
-from .base import CLOUDINARY, LOGGING, MIDDLEWARE, REST_FRAMEWORK, SIMPLE_JWT
+from .base import CLOUDINARY, LOGGING, MIDDLEWARE, MUSIC, REST_FRAMEWORK, SIMPLE_JWT
 
 DEBUG = False
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
@@ -12,6 +12,8 @@ STORAGES = {
 }
 
 FCM = {"SERVICE_ACCOUNT_JSON": ""}
+# No network calls to music providers from tests; Openverse tests switch it on with mocks.
+MUSIC.update({"JAMENDO_CLIENT_ID": "", "OPENVERSE_ENABLED": False})
 CLOUDINARY.update({"CLOUD_NAME": "flashx-test", "API_KEY": "test-key", "API_SECRET": "test-secret"})
 
 # Throttling is exercised by dedicated tests; keep it out of the way elsewhere.

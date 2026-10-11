@@ -115,9 +115,9 @@ def trending_reels(viewer, days=7, limit=10):
 def search_sounds(viewer, q):
     """Sounds already used on FlashX (catalogue songs and original sounds), most used first."""
     from apps.blocks.selectors import exclude_blocked
-    from apps.music.models import Sound
+    from apps.music.models import USABLE_SOURCES, Sound
 
-    qs = Sound.objects.filter(is_active=True, source__in=[Sound.Source.JAMENDO, Sound.Source.FLASHX]).filter(
+    qs = Sound.objects.filter(is_active=True, source__in=USABLE_SOURCES).filter(
         Q(title__icontains=q) | Q(artist__icontains=q) | Q(owner__username__icontains=q)
     )
     qs = qs.filter(Q(owner__isnull=True) | Q(owner__is_active=True, owner__is_private=False))

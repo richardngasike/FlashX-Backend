@@ -16,7 +16,8 @@ from .models import Sound
 class MusicSearchView(APIView):
     """
     GET /api/music/search/?q=&genre=&limit=
-    {"catalogue": [Jamendo tracks], "original": [FlashX original sounds], "popular": [...], "catalogue_enabled"}.
+    {"catalogue": [Jamendo and Openverse tracks], "original": [FlashX original sounds],
+     "popular": [...], "catalogue_enabled"}.
     Empty q and genre returns this week's popular tracks plus the most used sounds on FlashX.
     """
 

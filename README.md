@@ -267,6 +267,8 @@ Gmail allows about 500 emails a day. For more volume use a transactional provide
 | Variable | Default | Notes |
 |---|---|---|
 | `JAMENDO_CLIENT_ID` | empty | Client id from <https://devportal.jamendo.com>. Blank hides the song catalogue; original sounds still work |
+| `MUSIC_OPENVERSE` | `True` | Openverse (api.openverse.org) music search: openly licensed songs (CC0, public domain, CC BY, CC BY-SA) from Jamendo, ccMixter, Freesound, Wikimedia and others. Works without a key |
+| `OPENVERSE_CLIENT_ID`, `OPENVERSE_CLIENT_SECRET` | empty | Optional. Register at `POST https://api.openverse.org/v1/auth_tokens/register/` for a higher rate limit than anonymous access |
 | `MUSIC_COMMERCIAL_USE` | `True` | Keep `True` while the app shows ads: only tracks whose licence allows commercial use (no `NC`) are offered. Tracks with `ND` are never offered because posts mix and trim them |
 
 ### Media and content limits
@@ -442,7 +444,7 @@ Post `type` is one of `text`, `image`, `carousel`, `video` or `mixed`.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `stories/` | Tray: `[{user, has_unseen, latest_at, stories[]}]`, you first, then unseen |
-| POST | `stories/` | `media_id, caption?`; expires after `STORY_LIFETIME_HOURS` |
+| POST | `stories/` | `media_id, caption?`, optional `sound_id, sound_start, sound_volume, original_volume` (a song over the story); expires after `STORY_LIFETIME_HOURS` |
 | GET | `stories/user/{user_id}/` | One user's active stories |
 | GET / DELETE | `stories/{id}/` | |
 | POST | `stories/{id}/view/` | |
@@ -509,12 +511,12 @@ Video and audio travel through LiveKit. The API issues room tokens and keeps the
 | GET | `ads/?count=3` | Running ads, weighted random. The app shows one after every few feed posts, labelled Sponsored |
 | POST | `ads/{id}/impression/` | Ad was on screen |
 | POST | `ads/{id}/click/` | Button tapped. Returns `{link_url}` to open |
-| GET | `music/search/?q=&genre=&limit=` | `{catalogue, original, popular, catalogue_enabled}`. `catalogue`: Jamendo tracks (title, artist or genre match) whose Creative Commons licence fits the app (see `MUSIC_COMMERCIAL_USE`). `original`: FlashX users' original sounds. Empty `q` and `genre` return trending tracks and the most used sounds |
+| GET | `music/search/?q=&genre=&limit=` | `{catalogue, original, popular, catalogue_enabled}`. `catalogue`: Jamendo tracks (when `JAMENDO_CLIENT_ID` is set) plus Openverse tracks (title, artist or genre match) whose Creative Commons licence fits the app (see `MUSIC_COMMERCIAL_USE`). `original`: FlashX users' original sounds. Empty `q` and `genre` return trending tracks and the most used sounds |
 | GET | `music/genres/` | Genre filters for the picker |
 | GET | `music/sounds/{id}/` | One stored sound with `uses_count` and `usable` |
 | GET | `music/sounds/{id}/posts/`, `music/sounds/{id}/reels/` | Posts or reels using a sound, newest first |
 
-Posts and reels take `sound_id` (`"123"` for a stored sound, `"jamendo:456"` for a catalogue track), `sound_start` (seconds), `sound_volume` and `original_volume` (0..1). Catalogue details are re-read from Jamendo on the server, so the app cannot attach arbitrary audio. Reads return `sound` with the licence name and link, an `attribution` line, the mix, and `plays_separately` (false when the sound is the video's own soundtrack). A video posted without a chosen song becomes an **original sound** others can use, unless `allow_sound_reuse` is false or the post is not public. No YouTube or other unlicensed audio is used. Older posts keep their Deezer or iTunes preview as an inactive sound that still plays but cannot be added to new posts.
+Posts, reels and stories take `sound_id` (`"123"` for a stored sound, `"jamendo:456"` or `"openverse:<uuid>"` for a catalogue track), `sound_start` (seconds), `sound_volume` and `original_volume` (0..1). Catalogue details are re-read from Jamendo on the server, so the app cannot attach arbitrary audio. Reads return `sound` with the licence name and link, an `attribution` line, the mix, and `plays_separately` (false when the sound is the video's own soundtrack). A video posted without a chosen song becomes an **original sound** others can use, unless `allow_sound_reuse` is false or the post is not public. No YouTube or other unlicensed audio is used. Older posts keep their Deezer or iTunes preview as an inactive sound that still plays but cannot be added to new posts.
 
 **Licensing.** The Jamendo API is free for non-commercial apps. FlashX shows ads, so before launching with the catalogue switched on, get Jamendo's agreement for commercial use of the API (contact Jamendo through the developer portal). Independently of that, `MUSIC_COMMERCIAL_USE=True` (the default) offers only tracks whose Creative Commons licence allows commercial use, and `ND` tracks are never offered. Show the `attribution` line and licence wherever the sound appears; the app does.
 

@@ -15,6 +15,7 @@ class StorySerializer(serializers.ModelSerializer):
     my_reaction = serializers.CharField(read_only=True, default=None)
     is_owner = serializers.SerializerMethodField()
     views_count = serializers.SerializerMethodField()
+    sound = serializers.SerializerMethodField()
 
     class Meta:
         model = Story
@@ -30,6 +31,7 @@ class StorySerializer(serializers.ModelSerializer):
             "my_reaction",
             "is_owner",
             "views_count",
+            "sound",
             "created_at",
             "expires_at",
         )
@@ -39,6 +41,11 @@ class StorySerializer(serializers.ModelSerializer):
         data = {"type": obj.media_type}
         data.update(cld.variants(obj.cloudinary_public_id, obj.media_type) or {"url": obj.cloudinary_url})
         return data
+
+    def get_sound(self, obj) -> dict | None:
+        from apps.posts.serializers import sound_block
+
+        return sound_block(obj, "origin_story")
 
     def get_is_owner(self, obj) -> bool:
         return obj.author_id == self.context["request"].user.pk
@@ -58,6 +65,10 @@ class StoryTraySerializer(serializers.Serializer):
 class StoryCreateSerializer(serializers.Serializer):
     media_id = serializers.IntegerField(min_value=1)
     caption = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    sound_id = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=64)
+    sound_start = serializers.FloatField(required=False, min_value=0, max_value=3600)
+    sound_volume = serializers.FloatField(required=False, min_value=0, max_value=1)
+    original_volume = serializers.FloatField(required=False, min_value=0, max_value=1)
 
 
 class StoryReactSerializer(serializers.Serializer):
