@@ -140,8 +140,8 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "apps.core.exceptions.flashx_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_THROTTLE_CLASSES": (
-        "rest_framework.throttling.AnonRateThrottle",
-        "rest_framework.throttling.UserRateThrottle",
+        "apps.core.throttles.FlashXAnonRateThrottle",
+        "apps.core.throttles.FlashXUserRateThrottle",
     ),
     "DEFAULT_THROTTLE_RATES": {
         "anon": config("THROTTLE_ANON", default="60/min"),
@@ -152,9 +152,17 @@ REST_FRAMEWORK = {
         "content_create": config("THROTTLE_CONTENT_CREATE", default="60/hour"),
         "message_send": config("THROTTLE_MESSAGE_SEND", default="120/min"),
         "report": config("THROTTLE_REPORT", default="30/hour"),
+        "reaction": config("THROTTLE_REACTION", default="120/min"),
+        "typing": config("THROTTLE_TYPING", default="40/min"),
+        "gif_search": config("THROTTLE_GIF_SEARCH", default="60/min"),
+        "live_action": config("THROTTLE_LIVE_ACTION", default="60/min"),
     },
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
 }
+
+# Shared secret the FlashX website sends from its server-side proxy so anonymous
+# rate limits apply per visitor, not to the website's server IP. Blank = off.
+WEB_PROXY_SECRET = config("WEB_PROXY_SECRET", default="")
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=config("JWT_ACCESS_TOKEN_LIFETIME", default=15, cast=int)),
@@ -208,11 +216,35 @@ FLASHX_MEDIA_LIMITS = {
     "VIDEO_MAX_BYTES": config("MEDIA_VIDEO_MAX_BYTES", default=150 * 1024 * 1024, cast=int),
     "IMAGE_FORMATS": ["jpg", "jpeg", "png", "webp", "heic", "heif", "gif"],
     "VIDEO_FORMATS": ["mp4", "mov", "webm", "m4v", "3gp"],
+    # Messages only: audio files and voice notes (stored as Cloudinary "video") and documents.
+    "AUDIO_FORMATS": ["m4a", "aac", "mp3", "wav", "ogg", "oga", "opus", "amr", "flac"],
+    "FILE_FORMATS": [
+        "pdf",
+        "doc",
+        "docx",
+        "txt",
+        "rtf",
+        "odt",
+        "xls",
+        "xlsx",
+        "csv",
+        "ods",
+        "ppt",
+        "pptx",
+        "odp",
+        "zip",
+        "rar",
+        "7z",
+        "json",
+        "md",
+    ],
+    "FILE_MAX_BYTES": config("MEDIA_FILE_MAX_BYTES", default=25 * 1024 * 1024, cast=int),
     "POST_MAX_ITEMS": config("POST_MAX_MEDIA_ITEMS", default=10, cast=int),
     "POST_VIDEO_MAX_SECONDS": config("POST_VIDEO_MAX_SECONDS", default=600, cast=int),
     "STORY_VIDEO_MAX_SECONDS": config("STORY_VIDEO_MAX_SECONDS", default=60, cast=int),
     "REEL_MAX_SECONDS": config("REEL_MAX_SECONDS", default=180, cast=int),
     "MESSAGE_VIDEO_MAX_SECONDS": config("MESSAGE_VIDEO_MAX_SECONDS", default=300, cast=int),
+    "MESSAGE_AUDIO_MAX_SECONDS": config("MESSAGE_AUDIO_MAX_SECONDS", default=1800, cast=int),
 }
 
 FLASHX = {
@@ -250,9 +282,20 @@ MUSIC = {
     "OPENVERSE_CLIENT_SECRET": config("OPENVERSE_CLIENT_SECRET", default=""),
 }
 
+# GIF and sticker search in chats (GIPHY preferred, Tenor as an alternative).
+# Both empty = the GIF picker reports that search is unavailable.
+GIFS = {
+    "GIPHY_API_KEY": config("GIPHY_API_KEY", default=""),
+    "TENOR_API_KEY": config("TENOR_API_KEY", default=""),
+    "RATING": config("GIF_RATING", default="pg-13"),
+}
+
 # ---------------------------------------------------------------------------
 # Live video (LiveKit Cloud or self-hosted). Empty values = live is off.
 # ---------------------------------------------------------------------------
+# Guests on screen besides the host (99 = rooms of up to 100 people; LiveKit plan limits apply).
+LIVE_MAX_GUESTS = config("LIVE_MAX_GUESTS", default=99, cast=int)
+
 LIVEKIT = {
     "URL": config("LIVEKIT_URL", default=""),
     "API_KEY": config("LIVEKIT_API_KEY", default=""),

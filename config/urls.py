@@ -45,6 +45,8 @@ urlpatterns = [
     path("p/<int:pk>/", share.share_post, name="share-post"),
     path("r/<int:pk>/", share.share_reel, name="share-reel"),
     path("u/<str:username>/", share.share_user, name="share-user"),
+    path("l/<int:pk>/", share.share_live, name="share-live"),
+    path("g/<str:code>/", share.share_group, name="share-group"),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="api-docs"),
 ]

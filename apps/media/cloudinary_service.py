@@ -58,22 +58,36 @@ def belongs_to(public_id: str, user_id: int, purpose: str) -> bool:
     return public_id.startswith(folder_for(user_id, purpose) + "/")
 
 
-def allowed_formats(resource_type: str) -> list[str]:
+def allowed_formats(resource_type: str, purpose: str = "") -> list[str]:
     limits = settings.FLASHX_MEDIA_LIMITS
-    return limits["VIDEO_FORMATS"] if resource_type == "video" else limits["IMAGE_FORMATS"]
+    if resource_type == "raw":
+        return limits["FILE_FORMATS"]
+    if resource_type == "video":
+        # Audio files and voice notes are "video" resources on Cloudinary; only messages take them.
+        return limits["VIDEO_FORMATS"] + (limits["AUDIO_FORMATS"] if purpose == "message" else [])
+    return limits["IMAGE_FORMATS"]
 
 
-def sign_upload(user_id: int, purpose: str, resource_type: str) -> dict:
+def is_audio_format(fmt: str) -> bool:
+    return (fmt or "").lower() in settings.FLASHX_MEDIA_LIMITS["AUDIO_FORMATS"]
+
+
+def sign_upload(user_id: int, purpose: str, resource_type: str, extension: str = "") -> dict:
     """Signed params for a direct client -> Cloudinary upload into the user's own folder."""
     require_configured()
     c = _cfg()
     public_id = new_public_id(user_id, purpose)
+    if resource_type == "raw" and extension:
+        # Raw files keep their extension in the public id, so downloads open in the right app.
+        public_id = f"{public_id}.{extension}"
     params = {
         "public_id": public_id,
         "timestamp": int(time.time()),
         "overwrite": "false",
-        "allowed_formats": ",".join(allowed_formats(resource_type)),
     }
+    if resource_type != "raw":
+        # Cloudinary checks raw formats by extension only; the API re-checks after upload.
+        params["allowed_formats"] = ",".join(allowed_formats(resource_type, purpose))
     signature = cloudinary.utils.api_sign_request(params, c["API_SECRET"])
     return {
         **params,
@@ -225,6 +239,10 @@ def variants(public_id, resource_type):
     """URL set the Flutter client uses for responsive delivery."""
     if not public_id:
         return None
+    if resource_type == "raw":
+        # Documents: served as uploaded.
+        url = original_url(public_id, "raw")
+        return {"url": url, "original": url}
     if resource_type == "video":
         return {
             "url": video_url(public_id),

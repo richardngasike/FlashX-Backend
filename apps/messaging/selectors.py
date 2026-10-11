@@ -6,7 +6,7 @@ from django.db.models.functions import Coalesce
 
 from apps.users.selectors import base_users
 
-from .models import Conversation, ConversationParticipant, Message
+from .models import Conversation, ConversationParticipant, Message, MessageReaction
 
 EPOCH = datetime(1970, 1, 1, tzinfo=dt_timezone.utc)
 
@@ -28,6 +28,8 @@ def conversations_for(user):
             my_last_read=Coalesce(last_read, Value(EPOCH), output_field=DateTimeField()),
             my_cleared=Coalesce(cleared, Value(EPOCH), output_field=DateTimeField()),
             is_muted=Subquery(mine.values("is_muted")[:1]),
+            my_pinned=Subquery(mine.values("pinned_at")[:1]),
+            my_archived=Subquery(mine.values("archived_at")[:1]),
             last_message_id=Subquery(last_msg.values("id")[:1]),
         )
         .annotate(
@@ -47,19 +49,21 @@ def conversations_for(user):
     )
 
 
-def visible_conversations(user):
+def visible_conversations(user, archived=False):
     """
     The chat list. Groups always show (they get a "created the group" event, so
     ``last_message_at`` is set from the start); a direct thread shows once it
     has a message. Threads the user cleared stay hidden until something new arrives.
+    Archived chats are listed separately (``archived=True``) until unarchived.
     """
-    return (
+    qs = (
         conversations_for(user)
         .filter(Q(last_message_at__isnull=False) | Q(is_group=True))
         .annotate(activity_at=Coalesce("last_message_at", "created_at"))
         .filter(activity_at__gt=F("my_cleared"))
         .order_by("-activity_at", "-created_at")
     )
+    return qs.filter(my_archived__isnull=not archived)
 
 
 def messages_for(user, conversation_id, cleared_at=None):
@@ -68,7 +72,12 @@ def messages_for(user, conversation_id, cleared_at=None):
         .select_related(
             "sender__profile_image", "reply_to__sender", "shared_post__author", "shared_reel__author", "story__author"
         )
-        .prefetch_related("shared_post__media")
+        .prefetch_related(
+            "shared_post__media",
+            "attachments",
+            "reply_to__attachments",
+            Prefetch("reactions", queryset=MessageReaction.objects.order_by("created_at")),
+        )
     )
     if cleared_at:
         qs = qs.filter(created_at__gt=cleared_at)

@@ -5,7 +5,7 @@ from rest_framework import serializers
 from apps.media import cloudinary_service as cld
 from apps.users.serializers import UserSummarySerializer, avatar_payload
 
-from .models import Message
+from .models import Message, MessageAttachment
 
 
 def _post_preview(post, available):
@@ -46,6 +46,41 @@ def _story_preview(story):
     return {"id": story.pk, "available": True, "author_id": story.author_id, "thumbnail": variants.get("thumbnail")}
 
 
+def attachment_payload(a) -> dict:
+    """URLs for one attachment, by kind. Documents are served as the uploaded file."""
+    data = {
+        "id": a.pk,
+        "kind": a.kind,
+        "name": a.name,
+        "format": a.format,
+        "bytes": a.bytes,
+        "duration": a.duration,
+        "width": a.width,
+        "height": a.height,
+    }
+    if a.kind in (MessageAttachment.Kind.IMAGE, MessageAttachment.Kind.VIDEO):
+        data.update(cld.variants(a.public_id, a.resource_type) or {})
+    elif a.kind in (MessageAttachment.Kind.AUDIO, MessageAttachment.Kind.VOICE):
+        data["url"] = cld.original_url(a.public_id, "video")
+        # MP3 rendition for players that can't decode the original container.
+        data["mp3"] = cld.audio_url(a.public_id)
+    else:
+        data["url"] = cld.original_url(a.public_id, "raw")
+    return data
+
+
+def reactions_summary(reactions, me_id) -> list:
+    """[{"emoji": "x", "count": 2, "mine": true}] most used first."""
+    groups = {}
+    for r in reactions:
+        g = groups.setdefault(r.emoji, {"emoji": r.emoji, "count": 0, "mine": False, "first": r.created_at})
+        g["count"] += 1
+        g["mine"] = g["mine"] or r.user_id == me_id
+        g["first"] = min(g["first"], r.created_at)
+    rows = sorted(groups.values(), key=lambda g: (-g["count"], g["first"]))
+    return [{"emoji": g["emoji"], "count": g["count"], "mine": g["mine"]} for g in rows]
+
+
 class MessageSerializer(serializers.ModelSerializer):
     conversation_id = serializers.UUIDField(read_only=True)
     sender = UserSummarySerializer(read_only=True)
@@ -58,6 +93,11 @@ class MessageSerializer(serializers.ModelSerializer):
     is_mine = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
     event = serializers.SerializerMethodField()
+    attachments = serializers.SerializerMethodField()
+    reactions = serializers.SerializerMethodField()
+    gif_url = serializers.SerializerMethodField()
+    is_edited = serializers.SerializerMethodField()
+    is_pinned = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
@@ -77,9 +117,37 @@ class MessageSerializer(serializers.ModelSerializer):
             "is_deleted",
             "is_mine",
             "status",
+            "attachments",
+            "reactions",
+            "gif_url",
+            "forwarded",
+            "is_edited",
+            "edited_at",
+            "is_pinned",
+            "pinned_at",
+            "client_id",
             "created_at",
         )
         read_only_fields = fields
+
+    def get_attachments(self, obj) -> list:
+        if obj.is_deleted:
+            return []
+        return [attachment_payload(a) for a in obj.attachments.all()]
+
+    def get_reactions(self, obj) -> list:
+        if obj.is_deleted:
+            return []
+        return reactions_summary(obj.reactions.all(), self.context["request"].user.pk)
+
+    def get_gif_url(self, obj) -> str | None:
+        return None if obj.is_deleted or not obj.gif_url else obj.gif_url
+
+    def get_is_edited(self, obj) -> bool:
+        return obj.edited_at is not None and not obj.is_deleted
+
+    def get_is_pinned(self, obj) -> bool:
+        return obj.pinned_at is not None and not obj.is_deleted
 
     def get_content(self, obj) -> str | None:
         return None if obj.is_deleted else obj.content
@@ -107,8 +175,15 @@ class MessageSerializer(serializers.ModelSerializer):
             "sender": {"id": r.sender_id, "username": r.sender.username},
             "content": None if r.is_deleted else r.content[:140],
             "media_type": None if r.is_deleted else (r.media_type or None),
+            "attachment_kind": None if r.is_deleted else self._first_kind(r),
+            "has_gif": bool(r.gif_url) and not r.is_deleted,
             "is_deleted": r.is_deleted,
         }
+
+    @staticmethod
+    def _first_kind(msg):
+        first = next(iter(msg.attachments.all()), None)
+        return first.kind if first else None
 
     def get_shared_post(self, obj) -> dict | None:
         visible = self.context.get("visible_post_ids", set())
@@ -127,7 +202,10 @@ class MessageSerializer(serializers.ModelSerializer):
         if obj.kind == Message.Kind.SYSTEM or obj.sender_id != self.context["request"].user.pk:
             return None
         read_until = self.context.get("others_read_until")
-        return "read" if (obj.is_read or (read_until and read_until >= obj.created_at)) else "sent"
+        if obj.is_read or (read_until and read_until >= obj.created_at):
+            return "read"
+        delivered_until = self.context.get("others_delivered_until")
+        return "delivered" if delivered_until and delivered_until >= obj.created_at else "sent"
 
 
 class ConversationSerializer(serializers.Serializer):
@@ -137,8 +215,12 @@ class ConversationSerializer(serializers.Serializer):
     avatar = serializers.SerializerMethodField()
     participants = serializers.SerializerMethodField()
     last_message = serializers.SerializerMethodField()
-    unread_count = serializers.IntegerField(default=0)
+    unread_count = serializers.SerializerMethodField()
     is_muted = serializers.BooleanField(default=False)
+    is_pinned = serializers.SerializerMethodField()
+    is_archived = serializers.SerializerMethodField()
+    marked_unread = serializers.SerializerMethodField()
+    invite_code = serializers.SerializerMethodField()
     is_blocked = serializers.SerializerMethodField()
     can_message = serializers.SerializerMethodField()
     admin_id = serializers.IntegerField(source="created_by_id", allow_null=True)
@@ -146,6 +228,32 @@ class ConversationSerializer(serializers.Serializer):
     member_count = serializers.SerializerMethodField()
     last_message_at = serializers.DateTimeField()
     created_at = serializers.DateTimeField()
+
+    def _mine(self, obj):
+        me = self.context["request"].user.pk
+        return next((m for m in obj.memberships.all() if m.user_id == me), None)
+
+    def get_unread_count(self, obj) -> int:
+        count = getattr(obj, "unread_count", 0) or 0
+        mine = self._mine(obj)
+        # "Mark as unread" shows a badge even with nothing new.
+        return max(count, 1) if mine is not None and mine.marked_unread else count
+
+    def get_is_pinned(self, obj) -> bool:
+        mine = self._mine(obj)
+        return bool(mine and mine.pinned_at)
+
+    def get_is_archived(self, obj) -> bool:
+        mine = self._mine(obj)
+        return bool(mine and mine.archived_at)
+
+    def get_marked_unread(self, obj) -> bool:
+        mine = self._mine(obj)
+        return bool(mine and mine.marked_unread)
+
+    def get_invite_code(self, obj) -> str | None:
+        """Group admins only."""
+        return obj.invite_code if self.get_is_admin(obj) else None
 
     def _others(self, obj):
         me = self.context["request"].user.pk
@@ -179,7 +287,10 @@ class ConversationSerializer(serializers.Serializer):
         )
 
     def get_is_admin(self, obj) -> bool:
-        return obj.is_group and obj.created_by_id == self.context["request"].user.pk
+        if not obj.is_group:
+            return False
+        mine = self._mine(obj)
+        return obj.created_by_id == self.context["request"].user.pk or bool(mine and mine.is_admin)
 
     def get_member_count(self, obj) -> int:
         return len(obj.memberships.all())
@@ -214,14 +325,8 @@ class ConversationSerializer(serializers.Serializer):
             text = "Message deleted"
         elif msg.content:
             text = msg.content[:120]
-        elif msg.media_type:
-            text = "Photo" if msg.media_type == "image" else "Video"
-        elif msg.shared_post_id:
-            text = "Shared a post"
-        elif msg.shared_reel_id:
-            text = "Shared a reel"
         else:
-            text = ""
+            text = _list_preview(msg)
         return {
             "id": msg.pk,
             "text": text,
@@ -232,24 +337,99 @@ class ConversationSerializer(serializers.Serializer):
         }
 
 
+def _list_preview(msg) -> str:
+    kinds = [a.kind for a in msg.attachments.all()]
+    if msg.gif_url:
+        return "GIF"
+    if len(kinds) > 1:
+        return f"{len(kinds)} attachments"
+    if kinds:
+        return {"image": "Photo", "video": "Video", "audio": "Voice message", "voice": "Voice message"}.get(
+            kinds[0], "File"
+        )
+    if msg.media_type:
+        return "Photo" if msg.media_type == "image" else "Video"
+    if msg.shared_post_id:
+        return "Shared a post"
+    if msg.shared_reel_id:
+        return "Shared a reel"
+    return ""
+
+
 class SendMessageSerializer(serializers.Serializer):
     conversation_id = serializers.UUIDField(required=False)
     recipient_id = serializers.IntegerField(required=False, min_value=1)
     content = serializers.CharField(required=False, allow_blank=True, max_length=4000)
     media_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    media_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False, max_length=10, allow_empty=True
+    )
+    # {"<asset id>": "Report.pdf"}: original file names for documents.
+    attachment_names = serializers.DictField(
+        child=serializers.CharField(max_length=200, allow_blank=True), required=False
+    )
+    gif_url = serializers.URLField(required=False, allow_blank=True, max_length=500)
     reply_to_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    # Set by the device; retrying with the same value never creates a second message.
+    client_id = serializers.CharField(required=False, allow_blank=True, max_length=64)
 
     def validate(self, attrs):
         if bool(attrs.get("conversation_id")) == bool(attrs.get("recipient_id")):
             raise serializers.ValidationError("Provide either conversation_id or recipient_id.")
-        if not (attrs.get("content") or "").strip() and not attrs.get("media_id"):
+        if (
+            not (attrs.get("content") or "").strip()
+            and not attrs.get("media_id")
+            and not attrs.get("media_ids")
+            and not attrs.get("gif_url")
+        ):
             raise serializers.ValidationError("Message cannot be empty.")
         return attrs
 
 
+class EditMessageSerializer(serializers.Serializer):
+    content = serializers.CharField(max_length=4000)
+
+
+class ForwardSerializer(serializers.Serializer):
+    conversation_ids = serializers.ListField(child=serializers.UUIDField(), required=False, max_length=20)
+    recipient_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, max_length=20)
+
+    def validate(self, attrs):
+        if not attrs.get("conversation_ids") and not attrs.get("recipient_ids"):
+            raise serializers.ValidationError("Choose who to forward to.")
+        return attrs
+
+
+class ReactSerializer(serializers.Serializer):
+    emoji = serializers.CharField(max_length=16)
+
+
+class PinSerializer(serializers.Serializer):
+    pinned = serializers.BooleanField(default=True)
+
+
+class ListStateSerializer(serializers.Serializer):
+    pinned = serializers.BooleanField(required=False)
+    archived = serializers.BooleanField(required=False)
+    unread = serializers.BooleanField(required=False)
+
+
+class TypingSerializer(serializers.Serializer):
+    typing = serializers.BooleanField()
+
+
+class MemberRoleSerializer(serializers.Serializer):
+    is_admin = serializers.BooleanField()
+
+
+class BulkDeleteSerializer(serializers.Serializer):
+    ids = serializers.ListField(child=serializers.IntegerField(min_value=1), min_length=1, max_length=100)
+    scope = serializers.ChoiceField(choices=("me", "everyone"), default="me")
+
+
 class StartConversationSerializer(serializers.Serializer):
     recipient_id = serializers.IntegerField(required=False, min_value=1)
-    participant_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, max_length=31)
+    participant_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, max_length=255)
     title = serializers.CharField(required=False, allow_blank=True, max_length=80)
 
     def validate(self, attrs):
@@ -269,4 +449,4 @@ class MuteSerializer(serializers.Serializer):
 
 
 class GroupMembersSerializer(serializers.Serializer):
-    user_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), min_length=1, max_length=31)
+    user_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), min_length=1, max_length=255)

@@ -11,10 +11,15 @@ from apps.notifications import sync
 from apps.notifications.models import Notification, NotificationType, TargetType
 from apps.notifications.services import notify
 
-from .models import Conversation, ConversationParticipant, Message, MessageHidden
+from .models import Conversation, ConversationParticipant, Message, MessageAttachment, MessageHidden, MessageReaction
 
 User = get_user_model()
-MAX_GROUP_SIZE = 32
+MAX_GROUP_SIZE = 256
+MAX_ATTACHMENTS = 10
+EDIT_WINDOW = timezone.timedelta(minutes=15)
+TYPING_TTL = 6  # seconds a "typing" signal lasts without a refresh
+# Only the GIF providers' own CDNs (media.giphy.com, media.tenor.com, ...).
+GIF_HOSTS = ("giphy.com", "tenor.com")
 
 
 def member_ids(conversation) -> list:
@@ -47,6 +52,7 @@ def system_event(conversation, actor, event, *, users=(), title=""):
         "renamed": f'changed the group name to "{title}"',
         "photo": "changed the group photo",
         "photo_removed": "removed the group photo",
+        "joined": "joined using the group link",
     }
     msg = Message.objects.create(
         conversation=conversation,
@@ -166,12 +172,22 @@ def send_message(
     *,
     content="",
     media_id=None,
+    media_ids=None,
+    gif_url="",
     reply_to_id=None,
     shared_post=None,
     shared_reel=None,
     story=None,
+    client_id="",
+    forwarded_from=None,
     notification_type=NotificationType.MESSAGE,
 ):
+    client_id = (client_id or "").strip()[:64]
+    if client_id:
+        # A retry after a lost response: hand back the message already stored.
+        existing = Message.objects.filter(sender=sender, client_id=client_id).first()
+        if existing is not None:
+            return existing
     if not ConversationParticipant.objects.filter(conversation=conversation, user=sender).exists():
         raise ServiceError("Conversation not found.", code="not_found", status_code=404)
     if not conversation.is_group:
@@ -185,7 +201,17 @@ def send_message(
             if not other.user.is_active:
                 raise ServiceError("This account isn't available.", code="user_unavailable", status_code=404)
     content = (content or "").strip()
-    if not (content or media_id or shared_post or shared_reel):
+    gif_url = clean_gif_url(gif_url)
+    ids = [int(i) for i in (media_ids or [])]
+    if media_id:
+        ids.insert(0, int(media_id))
+    ids = list(dict.fromkeys(ids))
+    if len(ids) > MAX_ATTACHMENTS:
+        raise ServiceError(f"You can send up to {MAX_ATTACHMENTS} files at once.", code="too_many_attachments")
+    has_forward = forwarded_from is not None and (
+        forwarded_from.attachments.exists() or forwarded_from.media_public_id or forwarded_from.gif_url
+    )
+    if not (content or ids or gif_url or shared_post or shared_reel or has_forward):
         raise ServiceError("Message cannot be empty.", code="empty_message")
 
     reply_to = None
@@ -194,30 +220,41 @@ def send_message(
         if reply_to is None:
             raise ServiceError("The message you are replying to was not found.", code="reply_not_found")
 
-    asset = claim_one(sender, media_id, purposes={MediaPurpose.MESSAGE}) if media_id else None
+    from apps.media.services import claim_assets
+
+    assets = claim_assets(sender, ids, purposes={MediaPurpose.MESSAGE}, max_items=MAX_ATTACHMENTS) if ids else []
+    # Older app versions read the single "media" field: mirror the first photo or video there.
+    first_visual = next((a for a in assets if a.resource_type in ("image", "video") and not _is_audio(a)), None)
     now = timezone.now()
-    message = Message.objects.create(
-        conversation=conversation,
-        sender=sender,
-        kind=Message.Kind.USER,
-        content=content,
-        asset=asset,
-        media_url=asset.secure_url if asset else "",
-        media_public_id=asset.public_id if asset else "",
-        media_type=asset.resource_type if asset else "",
-        reply_to=reply_to,
-        shared_post=shared_post,
-        shared_reel=shared_reel,
-        story=story,
-    )
+    try:
+        with transaction.atomic():
+            message = Message.objects.create(
+                conversation=conversation,
+                sender=sender,
+                kind=Message.Kind.USER,
+                content=content,
+                gif_url=gif_url or (forwarded_from.gif_url if forwarded_from else ""),
+                asset=first_visual,
+                media_url=first_visual.secure_url if first_visual else "",
+                media_public_id=first_visual.public_id if first_visual else "",
+                media_type=first_visual.resource_type if first_visual else "",
+                reply_to=reply_to,
+                shared_post=shared_post,
+                shared_reel=shared_reel,
+                story=story,
+                client_id=client_id,
+                forwarded=forwarded_from is not None,
+            )
+    except IntegrityError:
+        # The same client_id raced in from a parallel retry.
+        return Message.objects.get(sender=sender, client_id=client_id)
+    _attach(message, assets, forwarded_from)
     Conversation.objects.filter(pk=conversation.pk).update(last_message_at=message.created_at, updated_at=now)
     ConversationParticipant.objects.filter(conversation=conversation, user=sender).update(
         last_read_at=message.created_at
     )
 
-    preview = content or (
-        "Sent a photo" if message.media_type == "image" else "Sent a video" if message.media_type else "Shared a post"
-    )
+    preview = content or _attachment_preview(message)
     for member in (
         ConversationParticipant.objects.filter(conversation=conversation, is_muted=False)
         .exclude(user=sender)
@@ -261,7 +298,9 @@ def mark_read(user, conversation_id):
     m = membership(user, conversation_id)
     now = timezone.now()
     m.last_read_at = now
-    m.save(update_fields=["last_read_at"])
+    m.delivered_at = now
+    m.marked_unread = False
+    m.save(update_fields=["last_read_at", "delivered_at", "marked_unread"])
     updated = (
         Message.objects.filter(conversation_id=conversation_id, is_read=False, created_at__lte=now)
         .exclude(sender=user)
@@ -288,15 +327,35 @@ def delete_message(user, message):
         raise ServiceError("You can only delete your own messages.", code="permission_denied", status_code=403)
     if message.is_deleted:
         return message
-    asset_id = message.asset_id
+    own = list(message.attachments.values_list("asset_id", "public_id"))
+    if message.asset_id:
+        own.append((message.asset_id, message.media_public_id))
+    public_ids = {p for _, p in own if p}
+    # Forwarded copies point at the same Cloudinary files (with no asset link of their own).
+    still_used = set(
+        MessageAttachment.objects.filter(public_id__in=public_ids)
+        .exclude(message=message)
+        .values_list("public_id", flat=True)
+    ) | set(
+        Message.objects.filter(media_public_id__in=public_ids, is_deleted=False)
+        .exclude(pk=message.pk)
+        .values_list("media_public_id", flat=True)
+    )
+    asset_ids = {a for a, p in own if a and p not in still_used}
     message.is_deleted = True
     message.deleted_at = timezone.now()
     message.content = ""
+    message.gif_url = ""
     message.asset = None
     message.media_url = message.media_public_id = message.media_type = ""
     message.shared_post = message.shared_reel = None
+    message.pinned_at = None
     message.save()
-    release_asset(asset_id)
+    message.attachments.all().delete()
+    message.reactions.all().delete()
+    # Forwarded copies still use the file: keep it while any copy exists.
+    for asset_id in asset_ids:
+        release_asset(asset_id)
     _sync(message.conversation, "message_deleted", message_id=message.pk)
     return message
 
@@ -315,9 +374,13 @@ def _group_membership(user, conversation_id):
     return m
 
 
+def is_admin(m) -> bool:
+    return m.conversation.created_by_id == m.user_id or m.is_admin
+
+
 def _require_admin(m):
-    if m.conversation.created_by_id != m.user_id:
-        raise ServiceError("Only the group admin can do this.", code="permission_denied", status_code=403)
+    if not is_admin(m):
+        raise ServiceError("Only group admins can do this.", code="permission_denied", status_code=403)
 
 
 @transaction.atomic
@@ -387,3 +450,500 @@ def unread_conversations_count(user) -> int:
     from .selectors import conversations_for
 
     return conversations_for(user).filter(unread_count__gt=0).count()
+
+
+# ---------------------------------------------------------------------------
+# Attachments and GIFs
+# ---------------------------------------------------------------------------
+def _is_audio(asset) -> bool:
+    from apps.media import cloudinary_service as cld
+
+    # Audio-only uploads have no picture size (Cloudinary may report an .m4a as "mp4").
+    return asset.resource_type == "video" and (cld.is_audio_format(asset.format) or not asset.width)
+
+
+def _attachment_kind(asset) -> str:
+    if asset.resource_type == "raw":
+        return MessageAttachment.Kind.FILE
+    if _is_audio(asset):
+        # Voice notes are recorded as AAC/M4A by the app and named voice-*.m4a.
+        return MessageAttachment.Kind.AUDIO
+    return asset.resource_type
+
+
+def _attach(message, assets, forwarded_from=None):
+    rows = [
+        MessageAttachment(
+            message=message,
+            asset=a,
+            kind=_attachment_kind(a),
+            public_id=a.public_id,
+            resource_type=a.resource_type,
+            format=a.format,
+            name=_original_name(a),
+            bytes=a.bytes,
+            duration=a.duration,
+            width=a.width,
+            height=a.height,
+            position=i,
+        )
+        for i, a in enumerate(assets)
+    ]
+    if forwarded_from is not None:
+        start = len(rows)
+        source = list(forwarded_from.attachments.all())
+        if not source and forwarded_from.media_public_id:
+            # A message from before attachments existed.
+            source = [
+                MessageAttachment(
+                    kind=forwarded_from.media_type,
+                    public_id=forwarded_from.media_public_id,
+                    resource_type=forwarded_from.media_type,
+                )
+            ]
+        for i, a in enumerate(source):
+            rows.append(
+                MessageAttachment(
+                    message=message,
+                    asset=None,
+                    kind=a.kind,
+                    public_id=a.public_id,
+                    resource_type=a.resource_type,
+                    format=a.format,
+                    name=a.name,
+                    bytes=a.bytes,
+                    duration=a.duration,
+                    width=a.width,
+                    height=a.height,
+                    position=start + i,
+                )
+            )
+        if source and not message.media_public_id and forwarded_from.media_public_id:
+            Message.objects.filter(pk=message.pk).update(
+                media_url=forwarded_from.media_url,
+                media_public_id=forwarded_from.media_public_id,
+                media_type=forwarded_from.media_type,
+            )
+    if rows:
+        MessageAttachment.objects.bulk_create(rows)
+
+
+def _original_name(asset) -> str:
+    # Raw public ids end with the original extension; the readable name is sent by the app.
+    tail = asset.public_id.rsplit("/", 1)[-1]
+    return tail[:200]
+
+
+def _attachment_preview(message) -> str:
+    kinds = list(message.attachments.values_list("kind", flat=True))
+    if message.gif_url:
+        return "Sent a GIF"
+    if not kinds:
+        if message.media_type:
+            return "Sent a photo" if message.media_type == "image" else "Sent a video"
+        return "Shared a post" if message.shared_post_id else "Shared a reel" if message.shared_reel_id else ""
+    if len(kinds) > 1:
+        return f"Sent {len(kinds)} attachments"
+    return {
+        "image": "Sent a photo",
+        "video": "Sent a video",
+        "audio": "Sent a voice message",
+        "voice": "Sent a voice message",
+        "file": "Sent a file",
+    }.get(kinds[0], "Sent an attachment")
+
+
+def clean_gif_url(url) -> str:
+    """Only GIFs from the configured GIF providers' CDNs can be sent by URL."""
+    url = (url or "").strip()
+    if not url:
+        return ""
+    from urllib.parse import urlparse
+
+    parts = urlparse(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not any(host == h or host.endswith("." + h) for h in GIF_HOSTS):
+        raise ServiceError("That GIF can't be sent.", code="invalid_gif")
+    return url[:500]
+
+
+def set_attachment_names(message, names):
+    """The app sends the original file names (documents) alongside the asset ids."""
+    if not names:
+        return
+    by_asset = {a.asset_id: a for a in message.attachments.all() if a.asset_id}
+    for asset_id, name in names.items():
+        att = by_asset.get(int(asset_id))
+        if att is not None and name:
+            att.name = str(name).strip()[:200]
+            att.save(update_fields=["name"])
+
+
+# ---------------------------------------------------------------------------
+# Editing, forwarding, reactions, pins
+# ---------------------------------------------------------------------------
+def _message_for(user, message_id) -> Message:
+    msg = (
+        Message.objects.filter(pk=message_id, conversation__memberships__user=user)
+        .select_related("conversation", "sender")
+        .distinct()
+        .first()
+    )
+    if msg is None or MessageHidden.objects.filter(message=msg, user=user).exists():
+        raise ServiceError("Message not found.", code="not_found", status_code=404)
+    return msg
+
+
+@transaction.atomic
+def edit_message(user, message_id, content) -> Message:
+    msg = _message_for(user, message_id)
+    if msg.sender_id != user.pk or msg.kind == Message.Kind.SYSTEM or msg.is_deleted:
+        raise ServiceError("You can only edit your own messages.", code="permission_denied", status_code=403)
+    if timezone.now() - msg.created_at > EDIT_WINDOW:
+        raise ServiceError("Messages can only be edited for 15 minutes.", code="edit_window_closed")
+    content = (content or "").strip()
+    if not content:
+        raise ServiceError("Message cannot be empty.", code="empty_message")
+    if content != msg.content:
+        msg.content = content[:4000]
+        msg.edited_at = timezone.now()
+        msg.save(update_fields=["content", "edited_at"])
+        _sync(msg.conversation, "message_edited", exclude=user.pk, message_id=msg.pk)
+    return msg
+
+
+def forward_message(user, message_id, *, conversation_ids=(), recipient_ids=()) -> list:
+    """Copy a message (text, GIF and files) into other chats. Returns the new messages."""
+    source = _message_for(user, message_id)
+    if source.is_deleted or source.kind == Message.Kind.SYSTEM:
+        raise ServiceError("This message can't be forwarded.", code="cannot_forward")
+    targets = []
+    for cid in dict.fromkeys(str(c) for c in conversation_ids):
+        targets.append(membership(user, cid).conversation)
+    for uid in dict.fromkeys(int(u) for u in recipient_ids):
+        if uid != user.pk:
+            targets.append(get_or_create_direct(user, _active_user(uid)))
+    if not targets:
+        raise ServiceError("Choose who to forward to.", code="no_recipients")
+    if len(targets) > 20:
+        raise ServiceError("You can forward to up to 20 chats at once.", code="too_many_recipients")
+    sent = []
+    for convo in dict.fromkeys(targets):
+        sent.append(
+            send_message(
+                user,
+                convo,
+                content=source.content,
+                shared_post=source.shared_post,
+                shared_reel=source.shared_reel,
+                forwarded_from=source,
+            )
+        )
+    return sent
+
+
+EMOJI_MAX_LEN = 16
+
+
+@transaction.atomic
+def react(user, message_id, emoji) -> Message:
+    msg = _message_for(user, message_id)
+    emoji = (emoji or "").strip()
+    if not emoji or len(emoji) > EMOJI_MAX_LEN or msg.is_deleted or msg.kind == Message.Kind.SYSTEM:
+        raise ServiceError("You can't react to this message.", code="invalid_reaction")
+    MessageReaction.objects.update_or_create(message=msg, user=user, defaults={"emoji": emoji})
+    _sync(msg.conversation, "message_reaction", exclude=user.pk, message_id=msg.pk)
+    return msg
+
+
+@transaction.atomic
+def unreact(user, message_id) -> Message:
+    msg = _message_for(user, message_id)
+    MessageReaction.objects.filter(message=msg, user=user).delete()
+    _sync(msg.conversation, "message_reaction", exclude=user.pk, message_id=msg.pk)
+    return msg
+
+
+@transaction.atomic
+def pin_message(user, message_id, pinned: bool) -> Message:
+    """Pin to the top of the chat. In groups only admins pin; in direct chats either person."""
+    msg = _message_for(user, message_id)
+    m = membership(user, msg.conversation_id)
+    if msg.conversation.is_group:
+        _require_admin(m)
+    if msg.is_deleted or msg.kind == Message.Kind.SYSTEM:
+        raise ServiceError("This message can't be pinned.", code="cannot_pin")
+    msg.pinned_at = timezone.now() if pinned else None
+    msg.pinned_by = user if pinned else None
+    msg.save(update_fields=["pinned_at", "pinned_by"])
+    _sync(msg.conversation, "message_pinned", message_id=msg.pk)
+    return msg
+
+
+# ---------------------------------------------------------------------------
+# Chat list state: pin, archive, unread
+# ---------------------------------------------------------------------------
+def set_list_state(user, conversation_id, *, pinned=None, archived=None, unread=None):
+    m = membership(user, conversation_id)
+    now = timezone.now()
+    fields = []
+    if pinned is not None:
+        if pinned and m.pinned_at is None:
+            if ConversationParticipant.objects.filter(user=user, pinned_at__isnull=False).count() >= 5:
+                raise ServiceError("You can pin up to 5 chats.", code="pin_limit")
+        m.pinned_at = (m.pinned_at or now) if pinned else None
+        fields.append("pinned_at")
+    if archived is not None:
+        m.archived_at = (m.archived_at or now) if archived else None
+        fields.append("archived_at")
+    if unread is not None:
+        m.marked_unread = bool(unread)
+        fields.append("marked_unread")
+    if fields:
+        m.save(update_fields=fields)
+    return m
+
+
+# ---------------------------------------------------------------------------
+# Delivery and typing
+# ---------------------------------------------------------------------------
+def mark_delivered(user, conversation_ids=None):
+    """
+    Messages up to now reached this user's device (called when the app fetches
+    chats). Senders are told only when something new was actually delivered.
+    """
+    from django.db.models import F, Q
+
+    qs = ConversationParticipant.objects.filter(user=user).filter(
+        Q(delivered_at__isnull=True) | Q(delivered_at__lt=F("conversation__last_message_at"))
+    )
+    if conversation_ids is not None:
+        qs = qs.filter(conversation_id__in=[str(c) for c in conversation_ids])
+    convo_ids = list(qs.values_list("conversation_id", flat=True)[:100])
+    if not convo_ids:
+        return 0
+    ConversationParticipant.objects.filter(user=user, conversation_id__in=convo_ids).update(delivered_at=timezone.now())
+    for convo in Conversation.objects.filter(pk__in=convo_ids, is_group=False):
+        _sync(convo, "delivered", exclude=user.pk)
+    return len(convo_ids)
+
+
+def _typing_key(conversation_id) -> str:
+    return f"typing:{conversation_id}"
+
+
+def set_typing(user, conversation_id, typing: bool):
+    """Remember who is typing for a few seconds; the app refreshes the signal while typing."""
+    import time
+
+    from django.core.cache import cache
+
+    m = membership(user, conversation_id)
+    key = _typing_key(conversation_id)
+    state = {int(k): v for k, v in (cache.get(key) or {}).items() if v > time.time()}
+    was_typing = user.pk in state
+    if typing:
+        state[user.pk] = time.time() + TYPING_TTL
+    else:
+        state.pop(user.pk, None)
+    cache.set(key, state, TYPING_TTL * 3)
+    if typing != was_typing:
+        # Only changes are pushed; refreshes ride on polling.
+        _sync(m.conversation, "typing", exclude=user.pk, typing="1" if typing else "0")
+
+
+def typing_users(user, conversation_id) -> list:
+    import time
+
+    from django.core.cache import cache
+
+    membership(user, conversation_id)
+    state = cache.get(_typing_key(conversation_id)) or {}
+    ids = [int(k) for k, v in state.items() if v > time.time() and int(k) != user.pk]
+    if not ids:
+        return []
+    hidden = hidden_user_ids(user)
+    return list(User.objects.filter(pk__in=ids, is_active=True).exclude(pk__in=hidden))
+
+
+# ---------------------------------------------------------------------------
+# Group admins and invite links
+# ---------------------------------------------------------------------------
+@transaction.atomic
+def set_admin(user, conversation_id, member_id, admin: bool):
+    m = _group_membership(user, conversation_id)
+    _require_admin(m)
+    convo = m.conversation
+    if int(member_id) == convo.created_by_id:
+        raise ServiceError("The group creator is always an admin.", code="permission_denied", status_code=403)
+    updated = ConversationParticipant.objects.filter(conversation=convo, user_id=member_id).update(is_admin=admin)
+    if not updated:
+        raise ServiceError("That person is not in this group.", code="not_found", status_code=404)
+    _sync(convo, "conversation")
+
+
+def invite_link(user, conversation_id, *, reset=False, disable=False):
+    """Create, reset or turn off a group's invite code (admins only)."""
+    import secrets
+
+    m = _group_membership(user, conversation_id)
+    _require_admin(m)
+    convo = m.conversation
+    if disable:
+        convo.invite_code = None
+    elif reset or not convo.invite_code:
+        convo.invite_code = secrets.token_urlsafe(12)
+    convo.save(update_fields=["invite_code", "updated_at"])
+    return convo.invite_code
+
+
+def group_for_code(code) -> Conversation:
+    convo = Conversation.objects.filter(invite_code=code, is_group=True).first() if code else None
+    if convo is None:
+        raise ServiceError("This invite link is no longer valid.", code="invalid_invite", status_code=404)
+    return convo
+
+
+@transaction.atomic
+def join_with_code(user, code) -> Conversation:
+    convo = group_for_code(code)
+    if ConversationParticipant.objects.filter(conversation=convo, user=user).exists():
+        return convo
+    admins = set(
+        ConversationParticipant.objects.filter(conversation=convo, is_admin=True).values_list("user_id", flat=True)
+    ) | {convo.created_by_id}
+    if admins & hidden_user_ids(user):
+        # Same answer as an invalid link: never reveal a block.
+        raise ServiceError("This invite link is no longer valid.", code="invalid_invite", status_code=404)
+    if ConversationParticipant.objects.filter(conversation=convo).count() >= MAX_GROUP_SIZE:
+        raise ServiceError(f"Groups are limited to {MAX_GROUP_SIZE} people.", code="group_too_large")
+    ConversationParticipant.objects.create(conversation=convo, user=user)
+    system_event(convo, user, "joined")
+    _sync(convo, "conversation")
+    return convo
+
+
+# ---------------------------------------------------------------------------
+# GIF and sticker search (server-side, so API keys never reach the apps)
+# ---------------------------------------------------------------------------
+GIF_TIMEOUT = 6
+
+
+def gif_search_enabled() -> bool:
+    from django.conf import settings
+
+    cfg = getattr(settings, "GIFS", {})
+    return bool(cfg.get("GIPHY_API_KEY") or cfg.get("TENOR_API_KEY"))
+
+
+def gif_search(query="", *, kind="gifs", offset=0, limit=24) -> dict:
+    """
+    Trending (empty query) or matching GIFs/stickers:
+    {"enabled": bool, "results": [{"id", "url", "preview", "width", "height"}], "next_offset": int | None}
+    """
+    import hashlib
+
+    from django.conf import settings
+    from django.core.cache import cache
+
+    cfg = getattr(settings, "GIFS", {})
+    if not gif_search_enabled():
+        return {"enabled": False, "results": [], "next_offset": None}
+    query = (query or "").strip()[:60]
+    kind = "stickers" if kind == "stickers" else "gifs"
+    offset = max(0, min(int(offset or 0), 500))
+    limit = max(1, min(int(limit or 24), 50))
+    key = "gifs:" + hashlib.sha1(f"{kind}|{query.lower()}|{offset}|{limit}".encode()).hexdigest()
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        if cfg.get("GIPHY_API_KEY"):
+            data = _giphy(cfg, query, kind, offset, limit)
+        else:
+            data = _tenor(cfg, query, kind, offset, limit)
+    except Exception as exc:  # network errors, quota, bad keys
+        import logging
+
+        logging.getLogger(__name__).warning("GIF search failed: %s", exc)
+        raise ServiceError("GIF search is unavailable right now.", code="gif_unavailable", status_code=503) from exc
+    data["enabled"] = True
+    cache.set(key, data, 300)
+    return data
+
+
+def _giphy(cfg, query, kind, offset, limit) -> dict:
+    import requests
+
+    path = "search" if query else "trending"
+    params = {"api_key": cfg["GIPHY_API_KEY"], "limit": limit, "offset": offset, "rating": cfg.get("RATING", "pg-13")}
+    if query:
+        params["q"] = query
+    r = requests.get(f"https://api.giphy.com/v1/{kind}/{path}", params=params, timeout=GIF_TIMEOUT)
+    r.raise_for_status()
+    body = r.json()
+    results = []
+    for item in body.get("data", []):
+        images = item.get("images") or {}
+        full = images.get("downsized") or images.get("original") or {}
+        small = images.get("fixed_width") or images.get("fixed_width_downsampled") or full
+        if not full.get("url"):
+            continue
+        results.append(
+            {
+                "id": str(item.get("id", "")),
+                "url": full["url"].split("?")[0],
+                "preview": (small.get("url") or full["url"]).split("?")[0],
+                "width": int(full.get("width") or 0),
+                "height": int(full.get("height") or 0),
+            }
+        )
+    pagination = body.get("pagination") or {}
+    total = int(pagination.get("total_count") or 0)
+    nxt = offset + len(body.get("data", []))
+    return {"results": results, "next_offset": nxt if results and nxt < min(total, 500) else None}
+
+
+def _tenor(cfg, query, kind, offset, limit) -> dict:
+    import requests
+
+    path = "search" if query else "featured"
+    params = {
+        "key": cfg["TENOR_API_KEY"],
+        "limit": limit,
+        "media_filter": "gif,tinygif",
+        "contentfilter": "medium",
+        "client_key": "flashx",
+    }
+    if query:
+        params["q"] = query
+    if kind == "stickers":
+        params["searchfilter"] = "sticker"
+    if offset:
+        params["pos"] = str(offset)
+    r = requests.get(f"https://tenor.googleapis.com/v2/{path}", params=params, timeout=GIF_TIMEOUT)
+    r.raise_for_status()
+    body = r.json()
+    results = []
+    for item in body.get("results", []):
+        formats = item.get("media_formats") or {}
+        full = formats.get("gif") or {}
+        small = formats.get("tinygif") or full
+        if not full.get("url"):
+            continue
+        dims = full.get("dims") or [0, 0]
+        results.append(
+            {
+                "id": str(item.get("id", "")),
+                "url": full["url"],
+                "preview": small.get("url") or full["url"],
+                "width": int(dims[0] or 0),
+                "height": int(dims[1] or 0),
+            }
+        )
+    nxt = body.get("next")
+    try:
+        nxt = int(nxt) if nxt else None
+    except (TypeError, ValueError):
+        nxt = None
+    return {"results": results, "next_offset": nxt if results else None}

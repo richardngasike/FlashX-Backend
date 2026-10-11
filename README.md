@@ -261,6 +261,17 @@ Gmail allows about 500 emails a day. For more volume use a transactional provide
 |---|---|---|
 | `LIVEKIT_URL` | empty | `wss://<project>.livekit.cloud` |
 | `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | empty | From the LiveKit project settings. Blank turns live video and calls off (`live/` reports `available: false`, `calls/` returns `503 calls_unavailable`) |
+| `LIVE_MAX_GUESTS` | `99` | Guests on screen besides the host (rooms of up to 100). LiveKit plan limits still apply |
+
+### GIFs in chats
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GIPHY_API_KEY` | empty | From <https://developers.giphy.com>. Used first when set |
+| `TENOR_API_KEY` | empty | Alternative provider (Tenor API v2 key from Google Cloud) |
+| `GIF_RATING` | `pg-13` | GIPHY content rating |
+
+Both keys blank: `messages/gifs/` returns `enabled: false` and the app hides GIF search. Keys stay on the server; the app never sees them.
 
 ### Music
 
@@ -282,6 +293,7 @@ Gmail allows about 500 emails a day. For more volume use a transactional provide
 | `STORY_VIDEO_MAX_SECONDS` | `60` | |
 | `REEL_MAX_SECONDS` | `180` | |
 | `MESSAGE_VIDEO_MAX_SECONDS` | `300` | |
+| `MESSAGE_AUDIO_MAX_SECONDS` | `1800` | Voice notes and audio files in chats |
 | `STORY_LIFETIME_HOURS` | `24` | |
 | `ONLINE_WINDOW_SECONDS` | `300` | A user counts as online if they used the API within this window |
 | `REPORT_AUTO_HIDE_THRESHOLD` | `0` (off) | Hide content automatically after this many distinct open reports |
@@ -300,6 +312,10 @@ The format is `number/sec|min|hour|day`.
 | `THROTTLE_CONTENT_CREATE` | `60/hour` | New posts, reels, stories, comments |
 | `THROTTLE_MESSAGE_SEND` | `120/min` | Messages and story replies |
 | `THROTTLE_REPORT` | `30/hour` | Reports |
+| `THROTTLE_REACTION` | `120/min` | Message reactions and live reaction counts |
+| `THROTTLE_TYPING` | `40/min` | Typing signals |
+| `THROTTLE_GIF_SEARCH` | `60/min` | GIF and sticker search |
+| `THROTTLE_LIVE_ACTION` | `60/min` | Live requests, invites, moderation and polls |
 
 ### Set by Vercel
 
@@ -456,21 +472,34 @@ Post `type` is one of `text`, `image`, `carousel`, `video` or `mixed`.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `messages/?q=` | Conversations with `unread_count`, `last_message` and participants (with `is_online`) |
-| POST | `messages/` | `recipient_id` **or** `conversation_id`, plus `content`, `media_id?`, `reply_to_id?` |
-| POST | `messages/conversations/` | `recipient_id` (direct), or `participant_ids[]` and `title` (group) |
-| GET | `messages/{conversation_id}/` | Messages, newest first. Your own messages have `status: sent\|read` |
+| GET | `messages/?q=&archived=1` | Conversations with `unread_count`, `last_message`, participants (with `is_online`), `is_pinned`, `is_archived`, `marked_unread`, and `invite_code` for group admins. The first page starts with your pinned chats and carries `archived_count`. `archived=1` lists archived chats. Fetching marks messages as delivered |
+| POST | `messages/` | `recipient_id` **or** `conversation_id`, plus any of `content`, `media_ids[]` (up to 10: photos, videos, audio/voice notes, documents), `attachment_names` (`{"<asset id>": "Report.pdf"}`), `gif_url` (GIPHY/Tenor CDN only), `reply_to_id`, `client_id` (a retry with the same value returns the first message instead of a duplicate). `media_id` still works |
+| POST | `messages/conversations/` | `recipient_id` (direct), or `participant_ids[]` and `title` (group, up to 256 people) |
+| GET | `messages/{conversation_id}/?q=` | Messages, newest first. `q` searches text and file names. Your own messages have `status: sent\|delivered\|read`. Each message has `attachments[]` (`kind: image\|video\|audio\|file`, URLs, `name`, `bytes`, `duration`), `reactions[]` (`{emoji, count, mine}`), `gif_url`, `forwarded`, `is_edited`, `is_pinned`, `client_id` |
 | DELETE | `messages/{conversation_id}/` | Clears the thread for you |
-| POST | `messages/{conversation_id}/read/` | |
+| POST | `messages/{conversation_id}/read/` | Also clears "marked as unread" |
 | POST | `messages/{conversation_id}/mute/` | `muted: bool` |
-| POST | `messages/{conversation_id}/leave/` | Leave a group. If the admin leaves, the longest-standing member becomes admin. An empty group is deleted |
-| GET / POST | `messages/{conversation_id}/members/` | GET: every member (you included), admin first, each with `is_admin`. POST (admin): `user_ids[]` adds people and returns the ids actually added |
-| DELETE | `messages/{conversation_id}/members/{user_id}/` | Admin removes someone. Removing yourself is the same as leaving |
-| GET / PATCH | `messages/{conversation_id}/info/` | PATCH (group admin): `title`, `image_id` (an upload with purpose `group`), `remove_image` |
-| DELETE | `messages/message/{id}/?for=everyone\|me` | `everyone` (default, sender only): soft-deletes the message ("Message deleted") and removes its media. `me` (any member): hides it from your own thread and chat list only, on every device |
+| POST | `messages/{conversation_id}/state/` | Your list only: `pinned` (up to 5), `archived`, `unread` (all optional booleans) |
+| GET / POST | `messages/{conversation_id}/typing/` | POST `typing: bool` while typing (refresh every few seconds; it lapses after 6 s). GET: who is typing. Sending a message clears it |
+| GET | `messages/{conversation_id}/pinned/` | Pinned messages |
+| POST | `messages/{conversation_id}/leave/` | Leave a group. If the creator leaves, the longest-standing member takes over. An empty group is deleted |
+| GET / POST | `messages/{conversation_id}/members/` | GET: every member, admins first, each with `is_admin` and `is_creator`. POST (admin): `user_ids[]` |
+| PATCH / DELETE | `messages/{conversation_id}/members/{user_id}/` | PATCH (admin): `is_admin`. DELETE: admin removes someone; removing yourself is leaving |
+| GET / POST / DELETE | `messages/{conversation_id}/invite/` | Admins: GET the invite code (created on first use), POST resets it, DELETE turns links off. The link is `https://<share host>/g/<code>/` |
+| GET / POST | `messages/join/{code}/` | GET previews the group, POST joins (a "joined using the group link" event is recorded). Blocked people get the same answer as an invalid link |
+| GET / PATCH | `messages/{conversation_id}/info/` | PATCH (group admin): `title`, `image_id`, `remove_image` |
+| PATCH | `messages/message/{id}/` | Sender edits the text within 15 minutes |
+| DELETE | `messages/message/{id}/?for=everyone\|me` | `everyone` (sender only): "Message deleted" for all and the files are removed unless a forwarded copy still uses them. `me`: hides it for you |
+| POST | `messages/message/bulk-delete/` | `ids[]` (up to 100), `scope: me\|everyone` |
+| POST | `messages/message/{id}/forward/` | `conversation_ids[]` and/or `recipient_ids[]` (up to 20 chats). Text, GIF and files are copied |
+| GET / POST / DELETE | `messages/message/{id}/react/` | POST `emoji` (one per person; reacting again changes it), DELETE removes yours, GET lists who reacted |
+| POST | `messages/message/{id}/pin/` | `pinned: bool`. Group admins only in groups; either person in a direct chat |
+| GET | `messages/gifs/?q=&type=gifs\|stickers&offset=` | GIF/sticker search through the server (trending when `q` is empty). `{enabled, results: [{id, url, preview, width, height}], next_offset}` |
 | GET | `messages/unread-count/` | |
 
-Groups record system messages (`kind: system`, `event: created\|added\|removed\|left\|renamed\|photo\|photo_removed`) so a new group appears in every member's list straight away, even before anyone writes, and the list is ordered by `activity_at` (last message, or creation for an empty group).
+Documents are uploaded like other media: `POST media/sign/` with `purpose: message`, `resource_type: raw` and `filename` (allowed: pdf, doc, docx, txt, rtf, xls, xlsx, csv, ppt, pptx, zip and the other types in `FLASHX_MEDIA_LIMITS["FILE_FORMATS"]`, up to 25 MB). Audio and voice notes use `resource_type: video` with an audio file (m4a, aac, mp3, wav, ogg, opus, amr, flac). Attachment URLs are long random Cloudinary paths; they are not signed, so anyone holding a URL can open that file.
+
+Groups record system messages (`kind: system`, `event: created\|added\|removed\|left\|renamed\|photo\|photo_removed\|joined`). Real-time updates are FCM data messages (`sync: message\|message_edited\|message_deleted\|message_reaction\|message_pinned\|typing\|delivered\|conversation`), with polling as the fallback.
 
 ### Calls
 
@@ -487,22 +516,40 @@ Voice and video calls between people who follow each other, carried by the same 
 Missed and cancelled calls create a `missed_call` notification. Ending a call deletes its LiveKit room.
 ### Live video
 
-Video and audio travel through LiveKit. The API issues room tokens and keeps the stream, presence, comments and guests. The app polls `comments/` every few seconds; that call is also the heartbeat. A stream whose host is silent for 90 seconds ends by itself.
+Video and audio travel through LiveKit. The API issues room tokens and keeps the stream, presence, comments, guests, moderation and polls. The app polls `comments/` every few seconds; that call is also the heartbeat. A stream whose host is silent for 90 seconds ends by itself. Floating reactions go device-to-device over LiveKit's data channel; the API only counts them.
+
+Roles: **host** (everything), **moderator** (chosen by the host: comments, requests, mutes, removals, bans), **guest** (on screen, up to `LIVE_MAX_GUESTS`), **viewer**. Host and moderator actions are written to a moderation log (admin).
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `live/` | `{available, results}`: streams on air, people you follow first, with `viewer_count` |
-| POST | `live/` | `title?`. Go live. Returns `{stream, role, livekit: {url, token, room, identity}}` and notifies up to 200 recent followers |
-| GET | `live/{id}/` | One stream |
-| POST | `live/{id}/join/` | Start watching. Same shape as POST `live/`, `role` is `viewer` or `guest` |
+| GET | `live/` | `{available, results}`: streams on air you may watch, people you follow first |
+| POST | `live/` | `title?, description?, category?` (chat, music, gaming, education, sports, fitness, food, travel, art, tech, business, news, comedy, beauty, other), `visibility: public\|followers\|private`, `allowed_user_ids[]` (private), `audio_only`, `allow_requests`, `notify_followers`. Returns `{stream, role, livekit}`. Followers (or the chosen people for a private live) are notified |
+| GET / PATCH | `live/{id}/` | PATCH (host): `title, description, category, allow_requests` |
+| POST | `live/{id}/join/` | Start watching. `role` is `viewer` or `guest`. `403 live_banned` for removed people |
 | POST | `live/{id}/leave/` | Stop watching. The host leaving ends the stream |
 | POST | `live/{id}/end/` | Host only |
-| GET | `live/{id}/comments/?after=` | `{status, viewer_count, role, invited, guests, comments}` |
-| POST | `live/{id}/comments/` | `text` (max 300) |
-| GET | `live/{id}/viewers/` | People watching now |
-| POST | `live/{id}/invite/` | Host: `user_id` of someone watching. Up to 3 guests on screen |
-| POST | `live/{id}/invite/respond/` | `accept`. Accepting returns a new token that can publish camera and microphone |
-| POST | `live/{id}/guests/{user_id}/remove/` | Host takes a guest off screen, or a guest steps down |
+| POST | `live/{id}/pause/` | Host: `on: bool` |
+| GET | `live/{id}/comments/?after=` | Room state: `status, viewer_count, role, invited, requested, muted_by_host, is_moderator, guests[] (with muted_by_host), comments, removed_comment_ids, pinned_comment, pinned_user_id, moderator_ids, poll, title, description, category, audio_only, allow_requests, is_paused, reactions_count, duration_seconds, max_guests`; managers also get `requests[]` and `questions[]` |
+| POST | `live/{id}/comments/` | `text` (max 300), `reply_to_id?`, `kind: comment\|question` |
+| DELETE | `live/{id}/comments/{comment_id}/` | Author, host or moderator |
+| POST | `live/{id}/comments/{comment_id}/answer/` | Host/moderator marks a question answered |
+| GET | `live/{id}/viewers/` | People watching now; managers also see `live_status` and `is_moderator` |
+| POST | `live/{id}/invite/` | Host/moderator: `user_id` of someone watching |
+| POST | `live/{id}/invite/respond/` | `accept`. Accepting returns a token that can publish |
+| GET / POST / DELETE | `live/{id}/requests/` | Viewer: POST asks to join on screen, DELETE cancels. Managers: GET the queue |
+| POST | `live/{id}/requests/{user_id}/` | Managers: `on: true` accepts, `false` rejects |
+| POST | `live/{id}/guests/{user_id}/mute/` | Managers: `on: bool`. Removes microphone publishing in LiveKit; the camera stays |
+| POST | `live/{id}/guests/{user_id}/remove/` | Managers take a guest off screen, or a guest steps down |
+| POST | `live/{id}/pin/` | `user_id` (host: large view for everyone, `null` = host) or `comment_id` (managers, `null` unpins) |
+| POST | `live/{id}/moderators/` | Host: `user_id, on` |
+| POST / DELETE | `live/{id}/bans/` | Managers: `user_id`. Disconnects them and blocks rejoining this live |
+| POST | `live/{id}/polls/` | Managers: `question`, `options[]` (2 to 6). Opening a poll closes the previous one |
+| POST | `live/{id}/polls/{poll_id}/vote/`, `.../close/` | `option` index; voting again changes it |
+| POST | `live/{id}/reactions/` | `count` (1 to 50), batched by the app |
+| GET | `live/{id}/stats/` | Host: duration, peak and total viewers, comments, reactions, questions, guests, polls, new followers, average watch time |
+| POST | `live/{id}/report/` | `reason, details?`. Goes to the moderation queue against the host, tagged with the live |
+
+Live is not recorded: there is no replay.
 
 ### Sponsored posts and music
 
@@ -522,7 +569,7 @@ Posts, reels and stories take `sound_id` (`"123"` for a stored sound, `"jamendo:
 
 ### Share links
 
-`/p/{id}/`, `/r/{id}/` and `/u/{username}/` (outside `/api/`) are public pages with Open Graph tags for link previews. They show only public content and open the app through `flashx://open/...` (Android App Links also claim them).
+`/p/{id}/`, `/r/{id}/`, `/u/{username}/`, `/l/{id}/` (public lives) and `/g/{code}/` (group invites) (outside `/api/`) are public pages with Open Graph tags for link previews. They show only public content and open the app through `flashx://open/...` (Android App Links also claim them).
 
 ### Notifications, search, discovery, reports, system
 

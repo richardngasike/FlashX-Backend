@@ -15,6 +15,8 @@ class Conversation(models.Model):
         settings.AUTH_USER_MODEL, through="ConversationParticipant", related_name="conversations"
     )
     image = models.ForeignKey("media.MediaAsset", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    # Groups: anyone with this code can join (admins create, reset or turn it off).
+    invite_code = models.CharField(max_length=24, unique=True, null=True, blank=True)
     last_message_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -38,6 +40,14 @@ class ConversationParticipant(models.Model):
     )
     last_read_at = models.DateTimeField(null=True, blank=True)
     is_muted = models.BooleanField(default=False)
+    # Group admins besides the creator (who always is one).
+    is_admin = models.BooleanField(default=False)
+    # Per-member list state.
+    pinned_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    marked_unread = models.BooleanField(default=False)
+    # Messages up to here reached this member's device ("delivered").
+    delivered_at = models.DateTimeField(null=True, blank=True)
     # Hides the thread for this user until a new message arrives.
     cleared_at = models.DateTimeField(null=True, blank=True)
     joined_at = models.DateTimeField(auto_now_add=True)
@@ -77,6 +87,16 @@ class Message(models.Model):
         help_text="Set when the message is a reply to a story.",
     )
     kind = models.CharField(max_length=8, choices=Kind.choices, default=Kind.USER)
+    # A GIF or sticker from the GIF provider (URL on its CDN).
+    gif_url = models.URLField(max_length=500, blank=True)
+    forwarded = models.BooleanField(default=False)
+    edited_at = models.DateTimeField(null=True, blank=True)
+    pinned_at = models.DateTimeField(null=True, blank=True)
+    pinned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    # Set by the sending device; a retry with the same id returns the first message.
+    client_id = models.CharField(max_length=64, blank=True)
     # Group events: {"event": "created|added|removed|left|renamed|photo", "user_ids": [...], "title": "..."}
     meta = models.JSONField(null=True, blank=True)
     is_read = models.BooleanField(default=False)
@@ -89,6 +109,13 @@ class Message(models.Model):
         indexes = [
             models.Index(fields=["conversation", "-created_at"]),
             models.Index(fields=["conversation", "is_read"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sender", "client_id"],
+                condition=~models.Q(client_id=""),
+                name="message_sender_client_id_unique",
+            )
         ]
 
     def __str__(self):
@@ -105,3 +132,47 @@ class MessageHidden(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=["message", "user"], name="message_hidden_unique")]
         indexes = [models.Index(fields=["user", "message"])]
+
+
+class MessageAttachment(models.Model):
+    """
+    A file sent with a message: photo, video, audio (voice notes), GIF or a
+    document. Forwarded messages copy the row (same Cloudinary file), so the
+    asset link is kept only on the original for clean-up.
+    """
+
+    class Kind(models.TextChoices):
+        IMAGE = "image", "Image"
+        VIDEO = "video", "Video"
+        AUDIO = "audio", "Audio"
+        VOICE = "voice", "Voice note"
+        FILE = "file", "File"
+
+    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="attachments")
+    asset = models.ForeignKey("media.MediaAsset", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    kind = models.CharField(max_length=8, choices=Kind.choices)
+    public_id = models.CharField(max_length=255)
+    resource_type = models.CharField(max_length=8)
+    format = models.CharField(max_length=16, blank=True)
+    name = models.CharField(max_length=200, blank=True)
+    bytes = models.PositiveBigIntegerField(default=0)
+    duration = models.FloatField(null=True, blank=True)
+    width = models.PositiveIntegerField(null=True, blank=True)
+    height = models.PositiveIntegerField(null=True, blank=True)
+    position = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ("position", "id")
+
+
+class MessageReaction(models.Model):
+    """One emoji per person per message; reacting again changes it."""
+
+    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="reactions")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    emoji = models.CharField(max_length=16)
+    created_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["message", "user"], name="message_reaction_unique")]
+        indexes = [models.Index(fields=["message", "emoji"])]

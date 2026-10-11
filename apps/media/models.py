@@ -14,7 +14,10 @@ class MediaPurpose(models.TextChoices):
 
 class ResourceType(models.TextChoices):
     IMAGE = "image", "Image"
+    # Cloudinary stores audio as "video" resources.
     VIDEO = "video", "Video"
+    # Documents and other files (PDF, Office, ZIP...).
+    RAW = "raw", "File"
 
 
 # Which resource types each purpose accepts.
@@ -24,7 +27,7 @@ PURPOSE_RESOURCE_TYPES = {
     MediaPurpose.POST: {ResourceType.IMAGE, ResourceType.VIDEO},
     MediaPurpose.STORY: {ResourceType.IMAGE, ResourceType.VIDEO},
     MediaPurpose.REEL: {ResourceType.VIDEO},
-    MediaPurpose.MESSAGE: {ResourceType.IMAGE, ResourceType.VIDEO},
+    MediaPurpose.MESSAGE: {ResourceType.IMAGE, ResourceType.VIDEO, ResourceType.RAW},
     MediaPurpose.GROUP: {ResourceType.IMAGE},
 }
 

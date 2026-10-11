@@ -23,12 +23,13 @@ class SignUploadView(APIView):
     def post(self, request):
         s = SignUploadSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        services.check_purpose(s.validated_data["purpose"], s.validated_data["resource_type"])
-        data = cld.sign_upload(request.user.id, s.validated_data["purpose"], s.validated_data["resource_type"])
-        data["max_bytes"] = (
-            services._limits()["VIDEO_MAX_BYTES"]
-            if s.validated_data["resource_type"] == "video"
-            else services._limits()["IMAGE_MAX_BYTES"]
+        purpose, rtype = s.validated_data["purpose"], s.validated_data["resource_type"]
+        services.check_purpose(purpose, rtype)
+        extension = services.file_extension(s.validated_data.get("filename", ""), rtype, purpose)
+        data = cld.sign_upload(request.user.id, purpose, rtype, extension)
+        limits = services._limits()
+        data["max_bytes"] = {"video": limits["VIDEO_MAX_BYTES"], "raw": limits["FILE_MAX_BYTES"]}.get(
+            rtype, limits["IMAGE_MAX_BYTES"]
         )
         data["max_duration"] = services.max_duration_for(s.validated_data["purpose"])
         return Response(data)

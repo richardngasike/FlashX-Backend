@@ -7,6 +7,8 @@ from .models import MediaAsset, MediaPurpose, ResourceType
 class SignUploadSerializer(serializers.Serializer):
     purpose = serializers.ChoiceField(choices=MediaPurpose.choices)
     resource_type = serializers.ChoiceField(choices=ResourceType.choices)
+    # Documents (resource_type "raw"): the original file name, for its extension.
+    filename = serializers.CharField(required=False, allow_blank=True, max_length=200)
 
 
 class RegisterUploadSerializer(serializers.Serializer):

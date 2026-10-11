@@ -1,5 +1,5 @@
 """
-Public share pages: https://<api-host>/p/<id>/, /r/<id>/, /u/<username>/.
+Public share pages: https://<api-host>/p/<id>/, /r/<id>/, /u/<username>/, /l/<id>/ (live), /g/<code>/ (group invite).
 
 A link copied from the app opens a small preview page with Open Graph tags
 (so chat apps show a card) and an "Open in FlashX" button. Phones with the app
@@ -99,4 +99,42 @@ def share_user(request, username):
         bio or "On FlashX.",
         avatar,
         f"flashx://open/u/{user.username}",
+    )
+
+
+def share_live(request, pk):
+    """Only public lives get a preview; the app checks access when the link is opened."""
+    from apps.live.models import LiveStream
+
+    stream = (
+        LiveStream.objects.select_related("host__profile_image")
+        .filter(pk=pk, host__is_active=True, visibility=LiveStream.Visibility.PUBLIC)
+        .first()
+    )
+    if stream is None:
+        return _unavailable()
+    host = stream.host
+    avatar = (
+        cld.image_url(host.profile_image.public_id, 600, 600, crop="fill", gravity="face") if host.profile_image else ""
+    )
+    on_air = stream.status == LiveStream.Status.LIVE
+    return _render(
+        f"{host.full_name or host.username} is live on FlashX" if on_air else f"{host.username}'s live has ended",
+        stream.title or ("Tap to watch." if on_air else "Follow them to catch the next one."),
+        avatar,
+        f"flashx://open/l/{stream.pk}",
+    )
+
+
+def share_group(request, code):
+    from apps.messaging.models import Conversation
+
+    convo = Conversation.objects.filter(invite_code=code, is_group=True).first() if code else None
+    if convo is None:
+        return _unavailable()
+    return _render(
+        f"Join {convo.title or 'a group chat'} on FlashX",
+        "You've been invited to a group chat.",
+        "",
+        f"flashx://open/g/{code}",
     )

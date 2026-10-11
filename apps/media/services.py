@@ -39,18 +39,44 @@ def check_purpose(purpose: str, resource_type: str):
         )
 
 
+def file_extension(filename: str, resource_type: str, purpose: str) -> str:
+    """Extension for a raw upload, checked against the allowed document types ("" otherwise)."""
+    if resource_type != ResourceType.RAW:
+        return ""
+    ext = (filename or "").rsplit(".", 1)[-1].lower() if "." in (filename or "") else ""
+    if ext not in cld.allowed_formats(resource_type, purpose):
+        raise ServiceError(
+            "This file type can't be sent.",
+            code="unsupported_file_type",
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        )
+    return ext
+
+
 def validate_metadata(meta: dict, purpose: str):
     """Raise ServiceError if the asset breaks size/format/duration rules."""
     limits = _limits()
     rtype = meta["resource_type"]
     fmt = (meta.get("format") or "").lower()
-    if fmt and fmt not in cld.allowed_formats(rtype):
+    if rtype == ResourceType.RAW and not fmt:
+        # Cloudinary reports no format for raw files: use the extension.
+        fmt = (meta.get("public_id") or "").rsplit(".", 1)[-1].lower() if "." in (meta.get("public_id") or "") else ""
+        if not fmt:
+            raise ServiceError(
+                "Unsupported file type.",
+                code="unsupported_file_type",
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            )
+    if fmt and fmt not in cld.allowed_formats(rtype, purpose):
         raise ServiceError(
             f"Unsupported {rtype} format: {fmt}.",
             code="unsupported_file_type",
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
         )
-    max_bytes = limits["VIDEO_MAX_BYTES"] if rtype == ResourceType.VIDEO else limits["IMAGE_MAX_BYTES"]
+    max_bytes = {
+        ResourceType.VIDEO: limits["VIDEO_MAX_BYTES"],
+        ResourceType.RAW: limits["FILE_MAX_BYTES"],
+    }.get(rtype, limits["IMAGE_MAX_BYTES"])
     if meta.get("bytes", 0) > max_bytes:
         raise ServiceError(
             f"File too large. Maximum is {max_bytes // (1024 * 1024)} MB.",
@@ -59,6 +85,9 @@ def validate_metadata(meta: dict, purpose: str):
         )
     if rtype == ResourceType.VIDEO:
         max_seconds = max_duration_for(purpose)
+        if purpose == MediaPurpose.MESSAGE and cld.is_audio_format(fmt):
+            # Voice notes and audio files: longer than chat videos.
+            max_seconds = limits.get("MESSAGE_AUDIO_MAX_SECONDS", 1800)
         duration = meta.get("duration")
         if max_seconds and duration and duration > max_seconds + 0.5:
             raise ServiceError(f"Video is too long. Maximum is {max_seconds} seconds.", code="video_too_long")

@@ -699,3 +699,29 @@ class OpenverseSoundTests(FlashXTestCase):
         asset = self.make_asset(self.user, purpose="story")
         story = self.assertOk(self.client.post(reverse("stories-list"), {"media_id": asset.pk}), 201)
         self.assertIsNone(story["sound"])
+
+
+class ProxyThrottleIdentTests(FlashXTestCase):
+    def _ident(self, **meta):
+        from rest_framework.request import Request
+        from rest_framework.test import APIRequestFactory
+
+        from apps.core.throttles import AuthRateThrottle
+
+        request = Request(APIRequestFactory().post("/api/auth/login/", **meta))
+        return AuthRateThrottle().get_ident(request)
+
+    @override_settings(WEB_PROXY_SECRET="s3cret")
+    def test_website_proxy_reports_visitor_ip(self):
+        ident = self._ident(REMOTE_ADDR="10.0.0.1", HTTP_X_FLASHX_PROXY="s3cret", HTTP_X_FLASHX_CLIENT_IP="41.90.1.2")
+        self.assertEqual(ident, "41.90.1.2")
+
+    @override_settings(WEB_PROXY_SECRET="s3cret")
+    def test_wrong_secret_is_ignored(self):
+        ident = self._ident(REMOTE_ADDR="10.0.0.1", HTTP_X_FLASHX_PROXY="nope", HTTP_X_FLASHX_CLIENT_IP="41.90.1.2")
+        self.assertEqual(ident, "10.0.0.1")
+
+    @override_settings(WEB_PROXY_SECRET="")
+    def test_disabled_without_secret(self):
+        ident = self._ident(REMOTE_ADDR="10.0.0.1", HTTP_X_FLASHX_PROXY="", HTTP_X_FLASHX_CLIENT_IP="41.90.1.2")
+        self.assertEqual(ident, "10.0.0.1")
