@@ -55,6 +55,7 @@ LOCAL_APPS = [
     "apps.live",
     "apps.calls",
     "apps.gifs",
+    "apps.wallet",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -212,6 +213,13 @@ CLOUDINARY = {
 }
 
 # Upload limits enforced server-side (bytes / seconds).
+# Coins and live gifts. Buying coins isn't open yet; people start with a welcome bonus.
+WALLET = {
+    "WELCOME_COINS": config("WALLET_WELCOME_COINS", default=500, cast=int),
+    "KSH_PER_COIN": config("WALLET_KSH_PER_COIN", default=1.0, cast=float),
+    "MAX_GIFT_QUANTITY": config("WALLET_MAX_GIFT_QUANTITY", default=99, cast=int),
+}
+
 FLASHX_MEDIA_LIMITS = {
     "IMAGE_MAX_BYTES": config("MEDIA_IMAGE_MAX_BYTES", default=15 * 1024 * 1024, cast=int),
     "VIDEO_MAX_BYTES": config("MEDIA_VIDEO_MAX_BYTES", default=150 * 1024 * 1024, cast=int),

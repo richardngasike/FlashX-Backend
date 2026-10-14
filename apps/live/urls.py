@@ -1,5 +1,7 @@
 from django.urls import path
 
+from apps.wallet.views import LiveGiftView
+
 from . import views
 
 urlpatterns = [
@@ -25,6 +27,7 @@ urlpatterns = [
     path("<int:pk>/polls/<int:poll_id>/vote/", views.LivePollVoteView.as_view(), name="live-poll-vote"),
     path("<int:pk>/polls/<int:poll_id>/close/", views.LivePollCloseView.as_view(), name="live-poll-close"),
     path("<int:pk>/reactions/", views.LiveReactionsView.as_view(), name="live-reactions"),
+    path("<int:pk>/gifts/", LiveGiftView.as_view(), name="live-gifts"),
     path("<int:pk>/pause/", views.LivePauseView.as_view(), name="live-pause"),
     path("<int:pk>/stats/", views.LiveStatsView.as_view(), name="live-stats"),
     path("<int:pk>/report/", views.LiveReportView.as_view(), name="live-report"),

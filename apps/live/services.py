@@ -675,7 +675,7 @@ def comment(stream, user, text, *, reply_to_id=None, kind=LiveComment.Kind.COMME
     text = (text or "").strip()
     if not text:
         raise ServiceError("Write something first.", code="empty_comment")
-    if kind not in LiveComment.Kind.values:
+    if kind not in (LiveComment.Kind.COMMENT, LiveComment.Kind.QUESTION):
         kind = LiveComment.Kind.COMMENT
     reply_to = None
     if reply_to_id:
@@ -731,7 +731,7 @@ def mark_answered(stream, actor, comment_id, answered=True) -> LiveComment:
 
 def comments_after(stream, viewer, after_id=0, limit=50):
     qs = LiveComment.objects.filter(stream=stream, user__is_active=True, is_removed=False).select_related(
-        "user__profile_image", "reply_to__user"
+        "user__profile_image", "reply_to__user", "gift_send__gift", "gift_send__recipient"
     )
     qs = exclude_blocked(qs, viewer, field="user_id")
     if after_id:
@@ -861,6 +861,9 @@ def stats(stream, host) -> dict:
         "total_viewers": stream.total_viewers,
         "comments": stream.comments_count,
         "reactions": stream.reactions_count,
+        "gifts_coins": stream.gifts_coins,
+        "gifts": stream.gifts.count(),
+        "top_gifters": top_gifters(stream),
         "questions": stream.comments.filter(kind=LiveComment.Kind.QUESTION).count(),
         "guests": stream.invites.filter(
             Q(status=LiveInvite.Status.ACCEPTED) | Q(status=LiveInvite.Status.ENDED)
@@ -881,3 +884,17 @@ def report(stream, reporter, reason, details=""):
         raise ServiceError("You cannot report your own live video.", code="self_report")
     note = f"[Live #{stream.pk}: {stream.title or 'untitled'}] {(details or '').strip()}"
     return file_report(reporter, target_type="user", target_id=stream.host_id, reason=reason, details=note[:1000])
+
+
+def top_gifters(stream, limit=5) -> list:
+    """Who sent the most coins in gifts during a live."""
+    from django.db.models import Sum
+
+    User = _user_model()
+    rows = list(stream.gifts.values("sender_id").annotate(total=Sum("coins")).order_by("-total", "sender_id")[:limit])
+    users = {u.pk: u for u in User.objects.filter(pk__in=[r["sender_id"] for r in rows])}
+    return [
+        {"user_id": r["sender_id"], "username": users[r["sender_id"]].username, "coins": r["total"]}
+        for r in rows
+        if r["sender_id"] in users
+    ]

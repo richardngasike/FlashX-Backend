@@ -17,9 +17,11 @@ class ServiceError(exceptions.APIException):
     default_code = "invalid_request"
     default_detail = "The request could not be completed."
 
-    def __init__(self, detail=None, code=None, status_code=None):
+    def __init__(self, detail=None, code=None, status_code=None, details=None):
         if status_code is not None:
             self.status_code = status_code
+        # Extra data for the client (e.g. a balance), returned as error.details.
+        self.extra_details = details
         super().__init__(detail, code)
 
 
@@ -90,6 +92,9 @@ def flashx_exception_handler(exc, context):
     if isinstance(details, dict) and set(details.keys()) <= {"detail", "code", "messages"}:
         details = None
 
+    extra = getattr(exc, "extra_details", None)
+    if extra is not None:
+        details = extra
     payload = {"success": False, "error": {"code": code, "message": str(message), "details": details}}
     if isinstance(exc, exceptions.Throttled) and exc.wait is not None:
         payload["error"]["retry_after"] = int(exc.wait)

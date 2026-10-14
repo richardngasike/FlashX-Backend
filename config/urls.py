@@ -38,6 +38,7 @@ api = [
     path("live/", include("apps.live.urls")),
     path("calls/", include("apps.calls.urls")),
     path("gifs/", include("apps.gifs.urls")),
+    path("wallet/", include("apps.wallet.urls")),
 ]
 
 urlpatterns = [

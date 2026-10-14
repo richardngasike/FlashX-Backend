@@ -32,6 +32,8 @@ class LiveStream(models.Model):
         "LiveComment", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
     reactions_count = models.PositiveIntegerField(default=0)
+    # Coins of every gift sent during this live.
+    gifts_coins = models.PositiveBigIntegerField(default=0)
     room_name = models.CharField(max_length=64, unique=True, default="", editable=False)
     status = models.CharField(max_length=8, choices=Status.choices, default=Status.LIVE, db_index=True)
     started_at = models.DateTimeField(auto_now_add=True)
@@ -72,6 +74,8 @@ class LiveComment(models.Model):
     class Kind(models.TextChoices):
         COMMENT = "comment", "Comment"
         QUESTION = "question", "Question for the host"
+        # Posted by the app when someone sends a gift (not writable by clients).
+        GIFT = "gift", "Gift"
 
     stream = models.ForeignKey(LiveStream, on_delete=models.CASCADE, related_name="comments")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
@@ -81,6 +85,9 @@ class LiveComment(models.Model):
     # Removed by the host or a moderator (kept for the moderation log).
     is_removed = models.BooleanField(default=False)
     answered = models.BooleanField(default=False)
+    gift_send = models.ForeignKey(
+        "wallet.GiftSend", null=True, blank=True, on_delete=models.SET_NULL, related_name="live_comments"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -31,6 +31,7 @@ class LiveStreamSerializer(serializers.ModelSerializer):
             "total_viewers",
             "comments_count",
             "reactions_count",
+            "gifts_coins",
             "is_host",
         )
         read_only_fields = fields
@@ -74,11 +75,23 @@ class LiveUpdateSerializer(serializers.Serializer):
 class LiveCommentSerializer(serializers.ModelSerializer):
     user = UserSummarySerializer(read_only=True)
     reply_to = serializers.SerializerMethodField()
+    gift = serializers.SerializerMethodField()
 
     class Meta:
         model = LiveComment
-        fields = ("id", "user", "text", "kind", "reply_to", "answered", "created_at")
+        fields = ("id", "user", "text", "kind", "reply_to", "answered", "gift", "created_at")
         read_only_fields = fields
+
+    def get_gift(self, obj) -> dict | None:
+        send = obj.gift_send if obj.gift_send_id else None
+        if send is None:
+            return None
+        from apps.wallet.services import gift_ref
+
+        data = gift_ref(send.gift, send.quantity)
+        data["coins_total"] = send.coins
+        data["recipient"] = {"id": send.recipient_id, "username": send.recipient.username}
+        return data
 
     def get_reply_to(self, obj) -> dict | None:
         r = obj.reply_to
@@ -90,7 +103,9 @@ class LiveCommentSerializer(serializers.ModelSerializer):
 class LiveCommentWriteSerializer(serializers.Serializer):
     text = serializers.CharField(max_length=300, trim_whitespace=True)
     reply_to_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
-    kind = serializers.ChoiceField(choices=LiveComment.Kind.choices, default=LiveComment.Kind.COMMENT)
+    kind = serializers.ChoiceField(
+        choices=[LiveComment.Kind.COMMENT, LiveComment.Kind.QUESTION], default=LiveComment.Kind.COMMENT
+    )
 
 
 class LiveUserSerializer(serializers.Serializer):

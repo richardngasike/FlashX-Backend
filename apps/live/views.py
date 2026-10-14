@@ -80,6 +80,7 @@ def _room_state(request, stream, after=0) -> dict:
         "allow_requests": stream.allow_requests,
         "is_paused": stream.paused_at is not None,
         "reactions_count": stream.reactions_count,
+        "gifts_coins": stream.gifts_coins,
         "duration_seconds": max(0, int((end_at - stream.started_at).total_seconds())),
         "max_guests": services.max_guests(),
     }

@@ -69,8 +69,9 @@ backend/
     ads/            sponsored posts with scheduling, weighting, impressions and clicks
     music/          sound library: Jamendo and Openverse search with licence filtering, original and uploaded sounds, saved, recent and trending sounds, sound pages
     gifs/           GIF creator (from photos or a video segment) and personal GIF library
+    wallet/         coins, wallet ledger, gift catalogue and live gifts (buying coins is not open yet)
     calls/          voice and video calls between mutual followers (LiveKit rooms, ringing, missed calls)
-  tests/            API test suite (186 tests, runs against PostgreSQL)
+  tests/            API test suite (270 tests, runs against PostgreSQL)
   tools/e2e/        end-to-end live video and call checks against a real LiveKit server
   .env.example      every environment variable, documented
   .env              ready-to-run local configuration (git-ignored)
@@ -282,6 +283,16 @@ Both keys blank: `messages/gifs/` returns `enabled: false` and the app hides GIF
 | `MUSIC_OPENVERSE` | `True` | Openverse (api.openverse.org) music search: openly licensed songs (CC0, public domain, CC BY, CC BY-SA) from Jamendo, ccMixter, Freesound, Wikimedia and others. Works without a key |
 | `OPENVERSE_CLIENT_ID`, `OPENVERSE_CLIENT_SECRET` | empty | Strongly recommended on Vercel: anonymous Openverse access is rate limited per IP, and Vercel servers share IPs, so searches can come back empty. Register once (free): `curl -X POST https://api.openverse.org/v1/auth_tokens/register/ -H "Content-Type: application/json" -d '{"name":"FlashX","description":"Licensed music for user posts","email":"you@example.com"}'`, confirm the email Openverse sends, then set both values. `GET api/health/` shows `features.music_status` (`openverse_authenticated`, `openverse_last_error`, e.g. `HTTP 429`) |
 | `MUSIC_COMMERCIAL_USE` | `True` | Keep `True` while the app shows ads: only tracks whose licence allows commercial use (no `NC`) are offered. Tracks with `ND` are never offered because posts mix and trim them |
+
+### Wallet and gifts
+
+| Variable | Default | Notes |
+|---|---|---|
+| `WALLET_WELCOME_COINS` | `500` | Coins added once, the first time someone opens their wallet or sends a gift. `0` turns the bonus off |
+| `WALLET_KSH_PER_COIN` | `1.0` | Only for showing a coin balance in Ksh. Coins are not exchangeable for money |
+| `WALLET_MAX_GIFT_QUANTITY` | `99` | Most gifts of one kind sent in one tap |
+
+Buying coins is not open: there is no payment provider yet, and coins sold inside the Android app must go through Google Play Billing. `POST wallet/recharge/` and `POST wallet/transfer/` answer `503 coming_soon`.
 
 ### Media and content limits
 
@@ -568,8 +579,22 @@ Roles: **host** (everything), **moderator** (chosen by the host: comments, reque
 | POST | `live/{id}/reactions/` | `count` (1 to 50), batched by the app |
 | GET | `live/{id}/stats/` | Host: duration, peak and total viewers, comments, reactions, questions, guests, polls, new followers, average watch time |
 | POST | `live/{id}/report/` | `reason, details?`. Goes to the moderation queue against the host, tagged with the live |
+| POST | `live/{id}/gifts/` | `gift` (slug), `quantity` (1 to `WALLET_MAX_GIFT_QUANTITY`), `recipient_id?` (host by default, or a guest on screen), `client_id` (retries with the same id never charge twice). Returns `{id, gift, coins, recipient_id, balance}`. `402 insufficient_coins` with `details: {balance, needed}`. Posts a `kind: gift` line in the live chat (with `gift: {slug, name, coins, size, quantity, coins_total, recipient}`) that every viewer's app animates; room state and stats include `gifts_coins`, stats also `gifts` and `top_gifters` |
 
 Live is not recorded: there is no replay.
+
+### Wallet
+
+Every balance change is an append-only `WalletTransaction` written in the same database transaction as the balance, with both wallets locked in user-id order.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `wallet/` | `{balance, ksh_value, ksh_per_coin, received_coins, sent_coins, recent[5], payments_available}`. The first call adds the welcome bonus |
+| GET | `wallet/transactions/?type=` | `all, gifts, gifts_sent, gifts_received, recharge, bonus, transfers`. Paged; each item `{id, kind, title, subtitle, amount (signed), balance_after, gift, counterparty, created_at}` |
+| GET | `wallet/gift-history/?direction=received\|sent` | Paged: `{id, gift, coins, direction, user, stream_id, created_at}` |
+| GET | `wallet/gifts/` | Gift catalogue: `slug, name, coins, size (small, medium, large, epic), category (gifts, special, events)`. Artwork ships in the app |
+| GET / POST | `wallet/recharge/` | GET: payment methods and coin packages with `available: false`. POST: `503 coming_soon` |
+| POST | `wallet/transfer/` | `503 coming_soon` |
 
 ### Sponsored posts and music
 
