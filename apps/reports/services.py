@@ -12,16 +12,30 @@ User = get_user_model()
 
 def _target_model(target_type):
     from apps.comments.models import Comment
+    from apps.music.models import Sound
     from apps.posts.models import Post
     from apps.reels.models import Reel
 
-    return {"post": Post, "reel": Reel, "comment": Comment, "user": User}[target_type]
+    return {"post": Post, "reel": Reel, "comment": Comment, "user": User, "sound": Sound}[target_type]
 
 
 def _target_owner_id(target_type, target):
     if target_type == "user":
         return target.pk
+    if target_type == "sound":
+        return target.owner_id
     return getattr(target, "author_id", None) or getattr(target, "user_id", None)
+
+
+def _hide(target_type, target, *, takedown=False):
+    """Hide reported content. A sound stops being offered; a takedown also stops it playing."""
+    if target_type == "sound":
+        fields = {"is_active": False}
+        if takedown:
+            fields.update(removed_at=timezone.now(), removed_reason="Removed after a report")
+        type(target).objects.filter(pk=target.pk).update(**fields)
+        return
+    type(target).objects.filter(pk=target.pk).update(is_hidden=True)
 
 
 def file_report(reporter, *, target_type, target_id, reason, details=""):
@@ -60,7 +74,7 @@ def _maybe_auto_hide(target_type, target):
         .count()
     )
     if pending >= threshold:
-        type(target).objects.filter(pk=target.pk).update(is_hidden=True)
+        _hide(target_type, target)
 
 
 @transaction.atomic
@@ -72,7 +86,7 @@ def resolve(report_ids, moderator, *, status, note="", hide_content=False, deact
         target = r.target
         if target is not None:
             if hide_content and r.target_type != "user":
-                type(target).objects.filter(pk=target.pk).update(is_hidden=True)
+                _hide(r.target_type, target, takedown=True)
             if deactivate_user:
                 owner_id = _target_owner_id(r.target_type, target)
                 User.objects.filter(pk=owner_id, is_staff=False).update(is_active=False)

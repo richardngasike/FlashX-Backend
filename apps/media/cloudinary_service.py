@@ -63,8 +63,8 @@ def allowed_formats(resource_type: str, purpose: str = "") -> list[str]:
     if resource_type == "raw":
         return limits["FILE_FORMATS"]
     if resource_type == "video":
-        # Audio files and voice notes are "video" resources on Cloudinary; only messages take them.
-        return limits["VIDEO_FORMATS"] + (limits["AUDIO_FORMATS"] if purpose == "message" else [])
+        # Audio files and voice notes are "video" resources on Cloudinary; messages and sounds take them.
+        return limits["VIDEO_FORMATS"] + (limits["AUDIO_FORMATS"] if purpose in ("message", "sound") else [])
     return limits["IMAGE_FORMATS"]
 
 
@@ -145,6 +145,8 @@ def normalize(res: dict, resource_type: str) -> dict:
         "height": res.get("height"),
         "duration": _extract_duration(res) if resource_type == "video" else None,
         "resource_type": resource_type,
+        # Frames in an animated image (GIF), when Cloudinary reports it.
+        "pages": res.get("pages"),
     }
 
 
@@ -169,6 +171,65 @@ def upload_remote(url: str, public_id: str, resource_type: str) -> dict:
     require_configured()
     res = cloudinary.uploader.upload(url, public_id=public_id, resource_type=resource_type, overwrite=True)
     return normalize(res, resource_type)
+
+
+def store_remote_image(url: str, user_id: int, purpose: str) -> dict:
+    """Copy an image (e.g. a GIF Cloudinary just rendered) into the user's folder as a normal upload."""
+    require_configured()
+    try:
+        res = cloudinary.uploader.upload(
+            url, public_id=new_public_id(user_id, purpose), resource_type="image", overwrite=False
+        )
+    except cloudinary.exceptions.Error as exc:
+        logger.warning("Cloudinary remote upload failed: %s", exc)
+        raise ServiceError("Couldn't make the GIF. Try a shorter or smaller one.", code="gif_failed") from exc
+    return normalize(res, "image")
+
+
+def _text_layer(text: str) -> dict:
+    return {
+        "overlay": {"font_family": "Arial", "font_size": 34, "font_weight": "bold", "text": text},
+        "color": "#FFFFFF",
+        "gravity": "south",
+        "y": 18,
+    }
+
+
+def video_gif_url(public_id, *, start, end, width, fps, speed=1.0, text=""):
+    """An animated GIF of part of an uploaded video (rendered by Cloudinary on request)."""
+    step = {"start_offset": f"{start:.2f}", "end_offset": f"{end:.2f}", "width": width, "crop": "limit", "fps": fps}
+    if speed and abs(speed - 1.0) > 0.01:
+        # accelerate:100 doubles the speed, -50 halves it.
+        step["effect"] = f"accelerate:{int(round((speed - 1.0) * 100))}"
+    transformation = [step]
+    if text:
+        transformation.append(_text_layer(text))
+    return _build(public_id, "video", transformation=transformation, format="gif")
+
+
+def gif_frame_url(public_id, *, width, height, text=""):
+    """One photo as a same-size GIF frame (letterboxed on black), optionally captioned."""
+    transformation = [{"width": width, "height": height, "crop": "pad", "background": "black"}]
+    if text:
+        transformation.append(_text_layer(text))
+    return _build(public_id, "image", transformation=transformation, format="png")
+
+
+def upload_image_bytes(data: bytes, user_id: int, purpose: str, filename="image.gif") -> dict:
+    """Store image bytes made on the server (e.g. a GIF assembled from photos) in the user's folder."""
+    import io
+
+    require_configured()
+    buf = io.BytesIO(data)
+    buf.name = filename
+    try:
+        res = cloudinary.uploader.upload(
+            buf, public_id=new_public_id(user_id, purpose), resource_type="image", overwrite=False
+        )
+    except cloudinary.exceptions.Error as exc:
+        logger.warning("Cloudinary upload failed: %s", exc)
+        raise ServiceError("Couldn't save the GIF. Please try again.", code="gif_failed") from exc
+    return normalize(res, "image")
 
 
 def list_resources(prefix: str, resource_type: str, max_results: int = 100) -> list[dict]:
@@ -214,8 +275,8 @@ def image_url(public_id, width=None, height=None, crop="limit", gravity=None):
     return _build(public_id, "image", **opts)
 
 
-def video_url(public_id, width=None):
-    opts = {"quality": "auto", "format": "mp4", "video_codec": "auto"}
+def video_url(public_id, width=None, quality="auto"):
+    opts = {"quality": quality, "format": "mp4", "video_codec": "auto"}
     if width:
         opts.update(width=width, crop="limit")
     return _build(public_id, "video", **opts)
@@ -225,9 +286,17 @@ def video_poster_url(public_id, width=720):
     return _build(public_id, "video", format="jpg", start_offset="0", width=width, crop="limit", quality="auto")
 
 
-def audio_url(public_id):
-    """The soundtrack of an uploaded video as MP3 (used for reusable "original sounds")."""
-    return _build(public_id, "video", format="mp3", audio_codec="mp3", bit_rate="128k")
+def audio_url(public_id, start=None, end=None):
+    """
+    The audio of an uploaded video or audio file as MP3 (used for reusable
+    sounds), optionally only the part between ``start`` and ``end`` seconds.
+    """
+    opts = {"format": "mp3", "audio_codec": "mp3", "bit_rate": "128k"}
+    if start:
+        opts["start_offset"] = f"{float(start):.2f}"
+    if end:
+        opts["end_offset"] = f"{float(end):.2f}"
+    return _build(public_id, "video", **opts)
 
 
 def original_url(public_id, resource_type):
@@ -247,6 +316,8 @@ def variants(public_id, resource_type):
         return {
             "url": video_url(public_id),
             "url_sd": video_url(public_id, width=540),
+            # Data saver and slow connections.
+            "url_low": video_url(public_id, width=360, quality="auto:eco"),
             "poster": video_poster_url(public_id),
             "thumbnail": video_poster_url(public_id, width=360),
             "original": original_url(public_id, "video"),

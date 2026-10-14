@@ -39,7 +39,7 @@ from django.db.models import F, Q
 
 from apps.core.exceptions import ServiceError
 
-from .models import USABLE_SOURCES, Sound
+from .models import USABLE_SOURCES, SavedSound, Sound
 
 logger = logging.getLogger(__name__)
 
@@ -387,14 +387,28 @@ def _stored_attribution(sound: Sound) -> str:
     return sound.label
 
 
-def sound_payload(sound: Sound) -> dict:
+def sound_payload(sound: Sound, viewer=None, saved_ids=None) -> dict:
+    """
+    A sound as the apps see it. ``viewer`` adds is_owner/is_saved; pass
+    ``saved_ids`` (a set of sound ids the viewer saved) when listing many.
+    A removed sound keeps its name for attribution but has no audio.
+    """
+    removed = sound.removed_at is not None
+    is_owner = bool(viewer is not None and sound.owner_id and sound.owner_id == viewer.pk)
+    if saved_ids is not None:
+        is_saved = sound.pk in saved_ids
+    elif viewer is not None and getattr(viewer, "is_authenticated", False):
+        is_saved = SavedSound.objects.filter(user=viewer, sound=sound).exists()
+    else:
+        is_saved = False
     return {
         "id": str(sound.pk),
         "source": sound.source,
         "title": sound.title,
         "artist": sound.artist,
+        "description": sound.description,
         "cover": sound.cover_url,
-        "audio_url": sound.audio_url,
+        "audio_url": "" if removed else sound.audio_url,
         "duration": sound.duration,
         "genre": sound.genre,
         "license_name": sound.license_name,
@@ -403,9 +417,30 @@ def sound_payload(sound: Sound) -> dict:
         "attribution": _stored_attribution(sound),
         "uses_count": sound.uses_count,
         "is_original": sound.source == Sound.Source.FLASHX,
+        "origin": sound.origin or ("video" if sound.source == Sound.Source.FLASHX else "catalogue"),
         "owner_id": sound.owner_id,
-        "usable": sound.is_active and sound.source in USABLE_SOURCES,
+        "owner_username": sound.owner.username if sound.owner_id and sound.owner else "",
+        "is_public": sound.is_public,
+        # Originals: whether the owner lets others use it.
+        "allow_reuse": sound.is_active,
+        "usable": sound.is_active and not removed and sound.source in USABLE_SOURCES,
+        "available": not removed,
+        "is_owner": is_owner,
+        "is_saved": is_saved,
     }
+
+
+def payloads(sounds, viewer) -> list:
+    """sound_payload for a list, with one query for the viewer's saves."""
+    sounds = list(sounds)
+    saved = set()
+    if viewer is not None and sounds:
+        saved = set(
+            SavedSound.objects.filter(user=viewer, sound_id__in=[x.pk for x in sounds]).values_list(
+                "sound_id", flat=True
+            )
+        )
+    return [sound_payload(x, viewer, saved) for x in sounds]
 
 
 # ---------------------------------------------------------------------------
@@ -415,8 +450,13 @@ def original_sounds(viewer, query="", limit=20):
     from apps.blocks.selectors import exclude_blocked
 
     qs = Sound.objects.filter(
-        source=Sound.Source.FLASHX, is_active=True, owner__is_active=True, owner__is_private=False
-    )
+        source=Sound.Source.FLASHX,
+        is_active=True,
+        is_public=True,
+        removed_at__isnull=True,
+        owner__is_active=True,
+        owner__is_private=False,
+    ).select_related("owner")
     qs = exclude_blocked(qs, viewer, "owner_id")
     if query:
         qs = qs.filter(Q(title__icontains=query) | Q(artist__icontains=query) | Q(owner__username__icontains=query))
@@ -427,12 +467,24 @@ def popular_sounds(viewer, limit=20):
     """Most used sounds on FlashX right now (catalogue and original)."""
     from apps.blocks.selectors import exclude_blocked
 
-    qs = Sound.objects.filter(is_active=True, uses_count__gt=0, source__in=USABLE_SOURCES)
+    qs = Sound.objects.filter(
+        is_active=True, is_public=True, removed_at__isnull=True, uses_count__gt=0, source__in=USABLE_SOURCES
+    ).select_related("owner")
     qs = exclude_blocked(qs.filter(Q(owner__isnull=True) | Q(owner__is_private=False)), viewer, "owner_id")
     return list(qs.order_by("-uses_count", "-created_at")[:limit])
 
 
-def search(viewer, query="", genre="", limit=30) -> dict:
+def _within(duration, min_seconds, max_seconds) -> bool:
+    if min_seconds is None and max_seconds is None:
+        return True
+    if not duration:
+        return False
+    if min_seconds is not None and duration < min_seconds:
+        return False
+    return max_seconds is None or duration <= max_seconds
+
+
+def search(viewer, query="", genre="", limit=30, min_seconds=None, max_seconds=None) -> dict:
     query = (query or "").strip()[:100]
     genre = (genre or "").strip()[:40]
     catalogue = _search_jamendo(query, genre, limit)
@@ -459,9 +511,22 @@ def search(viewer, query="", genre="", limit=30) -> dict:
             if snd is not None:
                 t["id"] = str(snd.pk)
                 t["uses_count"] = snd.uses_count
-    originals = [] if genre else [sound_payload(s) for s in original_sounds(viewer, query, limit=10)]
-    popular = [] if (query or genre) else [sound_payload(s) for s in popular_sounds(viewer, limit=10)]
-    return {"catalogue": catalogue, "original": originals, "popular": popular, "catalogue_enabled": catalogue_enabled()}
+    saved = set(SavedSound.objects.filter(user=viewer).values_list("sound_id", flat=True)) if viewer else set()
+    for t in catalogue:
+        t["is_saved"] = t["id"].isdigit() and int(t["id"]) in saved
+    catalogue = [t for t in catalogue if _within(t.get("duration"), min_seconds, max_seconds)]
+    originals = [] if genre else payloads(original_sounds(viewer, query, limit=10), viewer)
+    originals = [o for o in originals if _within(o.get("duration"), min_seconds, max_seconds)]
+    browsing = not (query or genre)
+    popular = payloads(popular_sounds(viewer, limit=10), viewer) if browsing else []
+    trending = payloads(trending_sounds(viewer, limit=10), viewer) if browsing else []
+    return {
+        "catalogue": catalogue,
+        "original": originals,
+        "popular": popular,
+        "trending": trending,
+        "catalogue_enabled": catalogue_enabled(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -500,14 +565,17 @@ def resolve(user, sound_id) -> Sound:
     if not raw.isdigit():
         raise ServiceError("That sound can't be used.", code="sound_unavailable")
     sound = Sound.objects.filter(pk=int(raw)).select_related("owner").first()
-    usable = sound is not None and sound.is_active and sound.source in USABLE_SOURCES
-    if not usable:
+    if sound is None or sound.removed_at is not None or sound.source not in USABLE_SOURCES:
         raise ServiceError("That sound can't be used.", code="sound_unavailable")
-    if sound.owner_id and sound.owner_id != user.pk:
-        from apps.blocks.selectors import is_blocked_between
-
-        if not sound.owner.is_active or sound.owner.is_private or is_blocked_between(user, sound.owner):
+    own = bool(sound.owner_id and sound.owner_id == user.pk)
+    if not own:
+        if not sound.is_active or not sound.is_public:
             raise ServiceError("That sound can't be used.", code="sound_unavailable")
+        if sound.owner_id:
+            from apps.blocks.selectors import is_blocked_between
+
+            if not sound.owner.is_active or sound.owner.is_private or is_blocked_between(user, sound.owner):
+                raise ServiceError("That sound can't be used.", code="sound_unavailable")
     return sound
 
 
@@ -548,6 +616,7 @@ def create_original(*, owner, public_id, title="", duration=None, post=None, ree
 
     return Sound.objects.create(
         source=Sound.Source.FLASHX,
+        origin=Sound.Origin.VIDEO,
         title=(title or "Original sound")[:200],
         artist=owner.username,
         cover_url=(cld.video_poster_url(public_id, width=300) or "")[:500],
@@ -584,3 +653,249 @@ def legacy_sound_id(value):
     if isinstance(value, dict):
         return value.get("id")
     return value
+
+
+# ---------------------------------------------------------------------------
+# Library: saved, recently used, trending, your own sounds
+# ---------------------------------------------------------------------------
+def visible_sound(viewer, sound_id) -> Sound:
+    """A sound the viewer may see (private uploads only for their owner; not from blocked accounts)."""
+    from django.http import Http404
+
+    sound = Sound.objects.select_related("owner").filter(pk=sound_id).first()
+    if sound is None:
+        raise Http404
+    if sound.owner_id and sound.owner_id != viewer.pk:
+        from apps.blocks.selectors import is_blocked_between
+
+        if not sound.owner.is_active or not sound.is_public or is_blocked_between(viewer, sound.owner):
+            raise Http404
+    return sound
+
+
+def save_sound(user, sound: Sound) -> bool:
+    from django.db import IntegrityError, transaction
+
+    if sound.removed_at is not None:
+        raise ServiceError("This sound isn't available any more.", code="sound_unavailable")
+    try:
+        with transaction.atomic():
+            SavedSound.objects.create(user=user, sound=sound)
+    except IntegrityError:
+        pass
+    return True
+
+
+def unsave_sound(user, sound: Sound) -> bool:
+    SavedSound.objects.filter(user=user, sound=sound).delete()
+    return False
+
+
+def saved_sounds(user):
+    return (
+        Sound.objects.filter(saves__user=user, removed_at__isnull=True)
+        .select_related("owner")
+        .order_by("-saves__created_at", "-id")
+    )
+
+
+def recent_sounds(user, limit=20) -> list:
+    """Sounds the user put on their own posts, reels and stories, most recent first."""
+    from apps.posts.models import Post
+    from apps.reels.models import Reel
+    from apps.stories.models import Story
+
+    rows = []
+    for model, owner_field in ((Post, "author"), (Reel, "author"), (Story, "author")):
+        rows += list(
+            model.objects.filter(**{owner_field: user}, sound__isnull=False)
+            .order_by("-created_at")
+            .values_list("sound_id", "created_at")[: limit * 2]
+        )
+    rows.sort(key=lambda r: r[1], reverse=True)
+    ordered = []
+    for sound_id, _ in rows:
+        if sound_id not in ordered:
+            ordered.append(sound_id)
+        if len(ordered) >= limit:
+            break
+    by_id = {
+        x.pk: x
+        for x in Sound.objects.filter(pk__in=ordered, removed_at__isnull=True).select_related("owner")
+        if x.is_active or x.owner_id == user.pk
+    }
+    return [by_id[i] for i in ordered if i in by_id]
+
+
+def trending_sounds(viewer, limit=20, days=7) -> list:
+    """Sounds used most on new posts, reels and stories over the last few days."""
+    from collections import Counter
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.blocks.selectors import exclude_blocked
+    from apps.posts.models import Post
+    from apps.reels.models import Reel
+    from apps.stories.models import Story
+
+    since = timezone.now() - timedelta(days=days)
+    counts = Counter()
+    for model in (Post, Reel, Story):
+        for sound_id in model.objects.filter(created_at__gte=since, sound__isnull=False).values_list(
+            "sound_id", flat=True
+        )[:5000]:
+            counts[sound_id] += 1
+    if not counts:
+        return []
+    qs = Sound.objects.filter(
+        pk__in=list(counts), is_active=True, is_public=True, removed_at__isnull=True, source__in=USABLE_SOURCES
+    ).select_related("owner")
+    qs = exclude_blocked(
+        qs.filter(Q(owner__isnull=True) | Q(owner__is_private=False, owner__is_active=True)), viewer, "owner_id"
+    )
+    found = list(qs)
+    found.sort(key=lambda x: (-counts[x.pk], -x.uses_count))
+    return found[:limit]
+
+
+def my_sounds(user):
+    """Your original sounds (from your videos and uploads), including private and switched-off ones."""
+    return (
+        Sound.objects.filter(owner=user, source=Sound.Source.FLASHX, removed_at__isnull=True)
+        .select_related("owner")
+        .order_by("-created_at", "-id")
+    )
+
+
+def _clip_bounds(start, end, file_seconds):
+    limit = float(settings.FLASHX_MEDIA_LIMITS.get("SOUND_CLIP_MAX_SECONDS", 180))
+    try:
+        start = max(0.0, float(start or 0))
+        end = float(end) if end not in (None, "") else None
+    except (TypeError, ValueError) as exc:
+        raise ServiceError("Invalid start or end.", code="validation_error") from exc
+    total = float(file_seconds or 0) or None
+    if total is not None and start >= total:
+        raise ServiceError("The start is past the end of the audio.", code="validation_error")
+    if end is None:
+        end = min(total, start + limit) if total else start + limit
+    if total is not None:
+        end = min(end, total)
+    if end - start < 1:
+        raise ServiceError("Choose at least one second of audio.", code="validation_error")
+    if end - start > limit + 0.5:
+        raise ServiceError(f"A sound can be at most {int(limit)} seconds.", code="sound_too_long")
+    return round(start, 2), round(end, 2)
+
+
+def create_uploaded(
+    owner,
+    *,
+    media_id,
+    title,
+    description="",
+    start=0,
+    end=None,
+    cover_media_id=None,
+    is_public=True,
+    allow_reuse=True,
+) -> Sound:
+    """
+    Publish an original sound from an audio file (or a video's soundtrack)
+    the user uploaded or recorded. Only the chosen part is played.
+    """
+    from django.db import transaction
+
+    from apps.media import cloudinary_service as cld
+    from apps.media.models import MediaPurpose, ResourceType
+    from apps.media.services import claim_one
+
+    title = (title or "").strip()
+    if not title:
+        raise ServiceError("Give your sound a name.", code="validation_error")
+    with transaction.atomic():
+        asset = claim_one(owner, media_id, purposes={MediaPurpose.SOUND})
+        if asset.resource_type != ResourceType.VIDEO:
+            raise ServiceError("Choose an audio file.", code="unsupported_file_type")
+        cover = None
+        if cover_media_id:
+            cover = claim_one(owner, cover_media_id, purposes={MediaPurpose.SOUND})
+            if cover.resource_type != ResourceType.IMAGE:
+                raise ServiceError("The cover must be an image.", code="unsupported_file_type")
+        start, end = _clip_bounds(start, end, asset.duration)
+        is_audio = cld.is_audio_format(asset.format) or not asset.width
+        if cover is not None:
+            cover_url = cld.image_url(cover.public_id, width=300, height=300, crop="fill")
+        elif not is_audio:
+            cover_url = cld.video_poster_url(asset.public_id, width=300) or ""
+        else:
+            cover_url = ""
+        return Sound.objects.create(
+            source=Sound.Source.FLASHX,
+            origin=Sound.Origin.UPLOAD,
+            title=title[:200],
+            artist=owner.username,
+            description=(description or "").strip()[:300],
+            cover_url=(cover_url or "")[:500],
+            audio_url=cld.audio_url(asset.public_id, start=start if start else None, end=end)[:500],
+            duration=round(end - start, 2),
+            owner=owner,
+            asset=asset,
+            cover_asset=cover,
+            is_public=bool(is_public),
+            is_active=bool(allow_reuse),
+        )
+
+
+def update_sound(sound: Sound, actor, data) -> Sound:
+    if sound.owner_id != actor.pk:
+        raise ServiceError("You can only change your own sounds.", code="permission_denied", status_code=403)
+    if sound.removed_at is not None:
+        raise ServiceError("This sound was removed.", code="sound_unavailable")
+    fields = []
+    if "title" in data:
+        title = (data["title"] or "").strip()
+        if not title:
+            raise ServiceError("Give your sound a name.", code="validation_error")
+        sound.title = title[:200]
+        fields.append("title")
+    if "description" in data:
+        sound.description = (data["description"] or "").strip()[:300]
+        fields.append("description")
+    if "allow_reuse" in data:
+        sound.is_active = bool(data["allow_reuse"])
+        fields.append("is_active")
+        # Keep the video's own switch in step for sounds that came from a video.
+        for model in ("origin_post", "origin_reel"):
+            content = getattr(sound, model, None)
+            if content is not None and content.allow_sound_reuse != sound.is_active:
+                type(content).objects.filter(pk=content.pk).update(allow_sound_reuse=sound.is_active)
+    if "is_public" in data:
+        if sound.origin != Sound.Origin.UPLOAD and not data["is_public"]:
+            raise ServiceError("Sounds from your videos follow the video's privacy.", code="validation_error")
+        sound.is_public = bool(data["is_public"])
+        fields.append("is_public")
+    if fields:
+        sound.save(update_fields=fields)
+    return sound
+
+
+def remove_sound(sound: Sound, actor) -> None:
+    """
+    The owner deletes a sound. Uploaded sounds stop playing everywhere
+    (posts that used them show the sound as unavailable); a video's sound
+    just stops being offered, since it is still the video's own audio.
+    """
+    from django.utils import timezone
+
+    if sound.owner_id != actor.pk:
+        raise ServiceError("You can only delete your own sounds.", code="permission_denied", status_code=403)
+    if sound.origin != Sound.Origin.UPLOAD:
+        update_sound(sound, actor, {"allow_reuse": False})
+        return
+    sound.removed_at = timezone.now()
+    sound.removed_reason = "Deleted by its owner"
+    sound.is_active = False
+    sound.save(update_fields=["removed_at", "removed_reason", "is_active"])
+    SavedSound.objects.filter(sound=sound).delete()

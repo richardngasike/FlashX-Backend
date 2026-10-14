@@ -37,6 +37,7 @@ api = [
     path("music/", include("apps.music.urls")),
     path("live/", include("apps.live.urls")),
     path("calls/", include("apps.calls.urls")),
+    path("gifs/", include("apps.gifs.urls")),
 ]
 
 urlpatterns = [

@@ -10,6 +10,8 @@ class MediaPurpose(models.TextChoices):
     REEL = "reel", "Reel video"
     MESSAGE = "message", "Message attachment"
     GROUP = "group", "Group photo"
+    SOUND = "sound", "Sound audio or cover"
+    GIF = "gif", "GIF or its source images and video"
 
 
 class ResourceType(models.TextChoices):
@@ -29,6 +31,10 @@ PURPOSE_RESOURCE_TYPES = {
     MediaPurpose.REEL: {ResourceType.VIDEO},
     MediaPurpose.MESSAGE: {ResourceType.IMAGE, ResourceType.VIDEO, ResourceType.RAW},
     MediaPurpose.GROUP: {ResourceType.IMAGE},
+    # Audio files (Cloudinary "video") or a video to take the sound from; images are covers.
+    MediaPurpose.SOUND: {ResourceType.IMAGE, ResourceType.VIDEO},
+    # Uploaded GIFs, and the photos or video a GIF is made from.
+    MediaPurpose.GIF: {ResourceType.IMAGE, ResourceType.VIDEO},
 }
 
 

@@ -10,7 +10,14 @@ class Comment(models.Model):
     post = models.ForeignKey("posts.Post", null=True, blank=True, on_delete=models.CASCADE, related_name="comments")
     reel = models.ForeignKey("reels.Reel", null=True, blank=True, on_delete=models.CASCADE, related_name="comments")
     parent_comment = models.ForeignKey("self", null=True, blank=True, on_delete=models.CASCADE, related_name="replies")
-    content = models.TextField(max_length=1000)
+    content = models.TextField(max_length=1000, blank=True)
+    # A GIF (GIPHY, Tenor or one made on FlashX) instead of or with the text.
+    gif_url = models.URLField(max_length=500, blank=True)
+    gif_width = models.PositiveIntegerField(null=True, blank=True)
+    gif_height = models.PositiveIntegerField(null=True, blank=True)
+    # The post or reel author can pin one top-level comment.
+    is_pinned = models.BooleanField(default=False)
+    edited_at = models.DateTimeField(null=True, blank=True)
     likes_count = models.PositiveIntegerField(default=0)
     replies_count = models.PositiveIntegerField(default=0)
     is_hidden = models.BooleanField(default=False, help_text="Hidden by moderation.")

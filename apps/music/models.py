@@ -41,6 +41,26 @@ class Sound(models.Model):
         "reels.Reel", null=True, blank=True, on_delete=models.CASCADE, related_name="original_sound"
     )
     is_active = models.BooleanField(default=True, help_text="Inactive sounds stay on old posts but can't be picked.")
+
+    class Origin(models.TextChoices):
+        CATALOGUE = "", "Catalogue track"
+        VIDEO = "video", "Soundtrack of a video"
+        UPLOAD = "upload", "Uploaded or recorded"
+
+    origin = models.CharField(max_length=8, choices=Origin.choices, default=Origin.CATALOGUE, blank=True)
+    description = models.CharField(max_length=300, blank=True)
+    # Uploaded sounds: the audio file (deleted with the sound) and an optional cover image.
+    asset = models.OneToOneField(
+        "media.MediaAsset", null=True, blank=True, on_delete=models.SET_NULL, related_name="sound"
+    )
+    cover_asset = models.OneToOneField(
+        "media.MediaAsset", null=True, blank=True, on_delete=models.SET_NULL, related_name="sound_cover"
+    )
+    # Private uploaded sounds are usable only by their owner.
+    is_public = models.BooleanField(default=True)
+    # Owner deleted it or moderators took it down: no longer played anywhere.
+    removed_at = models.DateTimeField(null=True, blank=True)
+    removed_reason = models.CharField(max_length=120, blank=True)
     uses_count = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -53,7 +73,11 @@ class Sound(models.Model):
                 name="sound_source_external_unique",
             )
         ]
-        indexes = [models.Index(fields=["source", "is_active", "-uses_count"]), models.Index(fields=["title"])]
+        indexes = [
+            models.Index(fields=["source", "is_active", "-uses_count"]),
+            models.Index(fields=["title"]),
+            models.Index(fields=["owner", "-created_at"]),
+        ]
 
     def __str__(self):
         return f"{self.title} - {self.artist}" if self.artist else self.title
@@ -66,3 +90,16 @@ class Sound(models.Model):
     @property
     def label(self) -> str:
         return " - ".join(x for x in (self.title, self.artist) if x)[:120]
+
+
+class SavedSound(models.Model):
+    """A sound someone bookmarked in the picker or on its page."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="saved_sounds")
+    sound = models.ForeignKey(Sound, on_delete=models.CASCADE, related_name="saves")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        constraints = [models.UniqueConstraint(fields=["user", "sound"], name="savedsound_unique")]
+        indexes = [models.Index(fields=["user", "-created_at"])]

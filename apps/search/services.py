@@ -117,8 +117,8 @@ def search_sounds(viewer, q):
     from apps.blocks.selectors import exclude_blocked
     from apps.music.models import USABLE_SOURCES, Sound
 
-    qs = Sound.objects.filter(is_active=True, source__in=USABLE_SOURCES).filter(
-        Q(title__icontains=q) | Q(artist__icontains=q) | Q(owner__username__icontains=q)
-    )
+    qs = Sound.objects.filter(
+        is_active=True, is_public=True, removed_at__isnull=True, source__in=USABLE_SOURCES
+    ).filter(Q(title__icontains=q) | Q(artist__icontains=q) | Q(owner__username__icontains=q))
     qs = qs.filter(Q(owner__isnull=True) | Q(owner__is_active=True, owner__is_private=False))
-    return exclude_blocked(qs, viewer, "owner_id").order_by("-uses_count", "-created_at")
+    return exclude_blocked(qs, viewer, "owner_id").select_related("owner").order_by("-uses_count", "-created_at")

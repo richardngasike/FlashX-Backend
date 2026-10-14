@@ -54,6 +54,7 @@ LOCAL_APPS = [
     "apps.music",
     "apps.live",
     "apps.calls",
+    "apps.gifs",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -242,6 +243,13 @@ FLASHX_MEDIA_LIMITS = {
     "POST_MAX_ITEMS": config("POST_MAX_MEDIA_ITEMS", default=10, cast=int),
     "POST_VIDEO_MAX_SECONDS": config("POST_VIDEO_MAX_SECONDS", default=600, cast=int),
     "STORY_VIDEO_MAX_SECONDS": config("STORY_VIDEO_MAX_SECONDS", default=60, cast=int),
+    # Uploaded or recorded sounds (the file; a sound itself plays at most SOUND_CLIP_MAX_SECONDS of it).
+    "SOUND_MAX_SECONDS": config("SOUND_MAX_SECONDS", default=600, cast=int),
+    "SOUND_CLIP_MAX_SECONDS": config("SOUND_CLIP_MAX_SECONDS", default=180, cast=int),
+    # GIF creator: largest finished GIF, longest video segment, most photos.
+    "GIF_MAX_BYTES": config("GIF_MAX_BYTES", default=8 * 1024 * 1024, cast=int),
+    "GIF_VIDEO_MAX_SECONDS": config("GIF_VIDEO_MAX_SECONDS", default=10, cast=int),
+    "GIF_MAX_FRAMES": config("GIF_MAX_FRAMES", default=30, cast=int),
     "REEL_MAX_SECONDS": config("REEL_MAX_SECONDS", default=180, cast=int),
     "MESSAGE_VIDEO_MAX_SECONDS": config("MESSAGE_VIDEO_MAX_SECONDS", default=300, cast=int),
     "MESSAGE_AUDIO_MAX_SECONDS": config("MESSAGE_AUDIO_MAX_SECONDS", default=1800, cast=int),

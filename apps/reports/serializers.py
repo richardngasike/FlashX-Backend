@@ -19,7 +19,7 @@ class ReportSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_target_id(self, obj):
-        return obj.post_id or obj.reel_id or obj.comment_id or obj.reported_user_id
+        return obj.post_id or obj.reel_id or obj.comment_id or obj.sound_id or obj.reported_user_id
 
 
 class ReasonSerializer(serializers.Serializer):

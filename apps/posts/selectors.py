@@ -24,7 +24,7 @@ def visible_posts(viewer):
 
 
 def with_relations(qs, viewer):
-    qs = qs.select_related("author__profile_image", "category", "sound").prefetch_related(
+    qs = qs.select_related("author__profile_image", "category", "sound__owner").prefetch_related(
         Prefetch("media", queryset=PostMedia.objects.order_by("order")),
         Prefetch("tagged_users", queryset=base_users()),
         "hashtags",

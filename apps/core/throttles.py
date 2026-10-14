@@ -43,7 +43,14 @@ class UploadThrottle(FlashXUserRateThrottle):
 
 
 class ContentCreateThrottle(FlashXUserRateThrottle):
+    """Counts creating content only: reading (GET) a comments list must not use up the quota."""
+
     scope = "content_create"
+
+    def allow_request(self, request, view):
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return True
+        return super().allow_request(request, view)
 
 
 class MessageSendThrottle(FlashXUserRateThrottle):

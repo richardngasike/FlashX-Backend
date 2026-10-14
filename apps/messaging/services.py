@@ -201,7 +201,7 @@ def send_message(
             if not other.user.is_active:
                 raise ServiceError("This account isn't available.", code="user_unavailable", status_code=404)
     content = (content or "").strip()
-    gif_url = clean_gif_url(gif_url)
+    gif_url = clean_gif_url(gif_url, sender)
     ids = [int(i) for i in (media_ids or [])]
     if media_id:
         ids.insert(0, int(media_id))
@@ -553,8 +553,11 @@ def _attachment_preview(message) -> str:
     }.get(kinds[0], "Sent an attachment")
 
 
-def clean_gif_url(url) -> str:
-    """Only GIFs from the configured GIF providers' CDNs can be sent by URL."""
+def clean_gif_url(url, user=None) -> str:
+    """
+    GIFs can be sent by URL from the configured GIF providers' CDNs, or from
+    the sender's FlashX GIF library (their own GIFs and other people's public ones).
+    """
     url = (url or "").strip()
     if not url:
         return ""
@@ -562,9 +565,14 @@ def clean_gif_url(url) -> str:
 
     parts = urlparse(url)
     host = (parts.hostname or "").lower()
-    if parts.scheme != "https" or not any(host == h or host.endswith("." + h) for h in GIF_HOSTS):
-        raise ServiceError("That GIF can't be sent.", code="invalid_gif")
-    return url[:500]
+    if parts.scheme == "https" and any(host == h or host.endswith("." + h) for h in GIF_HOSTS):
+        return url[:500]
+    if user is not None:
+        from apps.gifs.services import usable_gif
+
+        if usable_gif(user, url) is not None:
+            return url[:500]
+    raise ServiceError("That GIF can't be sent.", code="invalid_gif")
 
 
 def set_attachment_names(message, names):

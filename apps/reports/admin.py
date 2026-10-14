@@ -21,7 +21,7 @@ class ReportAdmin(admin.ModelAdmin):
     )
     list_filter = ("status", "target_type", "reason", "created_at")
     search_fields = ("details", "reporter__username", "reported_user__username", "post__caption", "comment__content")
-    raw_id_fields = ("reporter", "post", "reel", "comment", "reported_user", "reviewed_by")
+    raw_id_fields = ("reporter", "post", "reel", "comment", "sound", "reported_user", "reviewed_by")
     readonly_fields = ("reviewed_by", "reviewed_at", "created_at")
     date_hierarchy = "created_at"
     list_select_related = ("reporter", "reviewed_by")

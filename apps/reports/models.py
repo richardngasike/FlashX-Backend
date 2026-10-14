@@ -9,6 +9,7 @@ class Report(models.Model):
         REEL = "reel", "Reel"
         COMMENT = "comment", "Comment"
         USER = "user", "User"
+        SOUND = "sound", "Sound"
 
     class Reason(models.TextChoices):
         SPAM = "spam", "Spam"
@@ -35,6 +36,7 @@ class Report(models.Model):
     comment = models.ForeignKey(
         "comments.Comment", null=True, blank=True, on_delete=models.CASCADE, related_name="reports"
     )
+    sound = models.ForeignKey("music.Sound", null=True, blank=True, on_delete=models.CASCADE, related_name="reports")
     reported_user = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE, related_name="reports_received"
     )
@@ -67,6 +69,11 @@ class Report(models.Model):
                 name="report_unique_pending_comment",
             ),
             models.UniqueConstraint(
+                fields=["reporter", "sound"],
+                condition=Q(status="pending", sound__isnull=False),
+                name="report_unique_pending_sound",
+            ),
+            models.UniqueConstraint(
                 fields=["reporter", "reported_user", "target_type"],
                 condition=Q(status="pending", target_type="user"),
                 name="report_unique_pending_user",
@@ -78,6 +85,10 @@ class Report(models.Model):
 
     @property
     def target(self):
-        return {"post": self.post, "reel": self.reel, "comment": self.comment, "user": self.reported_user}.get(
-            self.target_type
-        )
+        return {
+            "post": self.post,
+            "reel": self.reel,
+            "comment": self.comment,
+            "user": self.reported_user,
+            "sound": self.sound,
+        }.get(self.target_type)

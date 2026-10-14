@@ -11,8 +11,12 @@ from .models import Comment
 
 
 @transaction.atomic
-def create_comment(user, target, content, parent_id=None) -> Comment:
+def create_comment(user, target, content, parent_id=None, gif_url="", gif_width=None, gif_height=None) -> Comment:
     kind = kind_of(target)
+    if gif_url:
+        from apps.messaging.services import clean_gif_url
+
+        gif_url = clean_gif_url(gif_url, user)
     if not target.comments_enabled:
         raise ServiceError("Comments are turned off for this content.", code="comments_disabled", status_code=403)
     parent = None
@@ -34,7 +38,16 @@ def create_comment(user, target, content, parent_id=None) -> Comment:
         else:
             reply_target_user = parent.user
 
-    comment = Comment.objects.create(user=user, content=content, parent_comment=parent, **{kind: target})
+    comment = Comment.objects.create(
+        user=user,
+        content=content,
+        gif_url=gif_url or "",
+        gif_width=gif_width if gif_url else None,
+        gif_height=gif_height if gif_url else None,
+        parent_comment=parent,
+        **{kind: target},
+    )
+    preview = content or "sent a GIF"
     type(target).objects.filter(pk=target.pk).update(comments_count=F("comments_count") + 1)
 
     notified = {user.pk}
@@ -46,7 +59,7 @@ def create_comment(user, target, content, parent_id=None) -> Comment:
             notification_type=NotificationType.REPLY,
             target_type=TargetType.COMMENT,
             reference_id=comment.pk,
-            preview=content,
+            preview=preview,
         )
         notified.add(reply_target_user.pk)
     if target.author_id not in notified:
@@ -56,7 +69,7 @@ def create_comment(user, target, content, parent_id=None) -> Comment:
             notification_type=NotificationType.COMMENT,
             target_type=TargetType.COMMENT,
             reference_id=comment.pk,
-            preview=content,
+            preview=preview,
         )
         notified.add(target.author_id)
     notify_mentions(
@@ -83,3 +96,36 @@ def delete_comment(user, comment):
         Comment.objects.filter(pk=comment.parent_comment_id).update(replies_count=Greatest(F("replies_count") - 1, 0))
     purge_target(TargetType.COMMENT, [comment.pk, *reply_ids])
     comment.delete()
+
+
+def edit_comment(user, comment, content) -> Comment:
+    """The author changes the text (a GIF comment may drop its text, a text-only one can't be emptied)."""
+    from django.utils import timezone
+
+    if user.pk != comment.user_id:
+        raise ServiceError("You can only edit your own comments.", code="permission_denied", status_code=403)
+    content = (content or "").strip()
+    if not content and not comment.gif_url:
+        raise ServiceError("Comment cannot be empty.", code="validation_error")
+    if content != comment.content:
+        comment.content = content
+        comment.edited_at = timezone.now()
+        comment.save(update_fields=["content", "edited_at", "updated_at"])
+    return comment
+
+
+@transaction.atomic
+def set_pinned(user, comment, pinned: bool) -> Comment:
+    """The post or reel author pins one top-level comment (pinning another replaces it)."""
+    target = comment.post or comment.reel
+    if target is None or user.pk != target.author_id:
+        raise ServiceError("Only the author can pin comments.", code="permission_denied", status_code=403)
+    if comment.parent_comment_id:
+        raise ServiceError("Replies can't be pinned.", code="validation_error")
+    kind = kind_of(target)
+    if pinned:
+        Comment.objects.filter(is_pinned=True, **{kind: target}).exclude(pk=comment.pk).update(is_pinned=False)
+    if comment.is_pinned != pinned:
+        comment.is_pinned = pinned
+        comment.save(update_fields=["is_pinned"])
+    return comment

@@ -67,7 +67,8 @@ backend/
     reports/        content reports and moderation actions
     live/           live video: streams, presence, comments, guest invites, LiveKit tokens
     ads/            sponsored posts with scheduling, weighting, impressions and clicks
-    music/          sound library: Jamendo catalogue search with licence filtering, original sounds, sound pages
+    music/          sound library: Jamendo and Openverse search with licence filtering, original and uploaded sounds, saved, recent and trending sounds, sound pages
+    gifs/           GIF creator (from photos or a video segment) and personal GIF library
     calls/          voice and video calls between mutual followers (LiveKit rooms, ringing, missed calls)
   tests/            API test suite (186 tests, runs against PostgreSQL)
   tools/e2e/        end-to-end live video and call checks against a real LiveKit server
@@ -294,6 +295,11 @@ Both keys blank: `messages/gifs/` returns `enabled: false` and the app hides GIF
 | `REEL_MAX_SECONDS` | `180` | |
 | `MESSAGE_VIDEO_MAX_SECONDS` | `300` | |
 | `MESSAGE_AUDIO_MAX_SECONDS` | `1800` | Voice notes and audio files in chats |
+| `SOUND_MAX_SECONDS` | `600` | Longest audio file for an uploaded or recorded sound |
+| `SOUND_CLIP_MAX_SECONDS` | `180` | Longest part of that file a sound plays |
+| `GIF_MAX_BYTES` | `8388608` | Largest finished GIF (8 MB) |
+| `GIF_VIDEO_MAX_SECONDS` | `10` | Longest video segment turned into a GIF |
+| `GIF_MAX_FRAMES` | `30` | Most photos in one GIF |
 | `STORY_LIFETIME_HOURS` | `24` | |
 | `ONLINE_WINDOW_SECONDS` | `300` | A user counts as online if they used the API within this window |
 | `REPORT_AUTO_HIDE_THRESHOLD` | `0` (off) | Hide content automatically after this many distinct open reports |
@@ -425,7 +431,7 @@ All paths are under `/api/`. Every endpoint needs a token except `health/`, `aut
 | POST | `media/upload/` | Multipart `purpose, file`; the server uploads to Cloudinary. Vercel rejects bodies over 4.5 MB |
 | DELETE | `media/{id}/` | Discards an unattached upload |
 
-Purposes: `avatar`, `cover` and `group` (images); `post`, `story` and `message` (image or video); `reel` (video). Media responses include `large` (viewer) and `original` (download) URLs.
+Purposes: `avatar`, `cover` and `group` (images); `post`, `story` and `message` (image or video); `reel` (video); `sound` (an audio file, or a video to take the sound from, plus an optional cover image); `gif` (a GIF file, or the photos or video a GIF is made from). Media responses include `large` (viewer) and `original` (download) URLs.
 
 ### Posts and comments
 
@@ -437,9 +443,10 @@ Purposes: `avatar`, `cover` and `group` (images); `post`, `story` and `message` 
 | GET / PATCH / DELETE | `posts/{id}/` | Only the author can write. Media cannot change after posting |
 | POST / DELETE | `posts/{id}/like/`, `posts/{id}/save/` | Idempotent; returns the new count |
 | GET | `posts/{id}/likes/` | Likers |
-| GET / POST | `posts/{id}/comments/` | POST `content, parent_id?`. `posts/{id}/comment/` is an alias |
+| GET / POST | `posts/{id}/comments/?sort=oldest\|newest\|top` | The pinned comment comes first. POST `content, parent_id?, gif_url?, gif_width?, gif_height?` (text, a GIF or both; GIFs from GIPHY/Tenor or the sender's GIF library). `posts/{id}/comment/` is an alias. Reading comments doesn't count towards the posting rate limit |
 | POST | `posts/{id}/share/` | `recipient_ids[], message?`, sent as DMs |
-| GET / DELETE | `comments/{id}/` | The comment author or the post author can delete |
+| GET / PATCH / DELETE | `comments/{id}/` | PATCH `content`: the comment author edits (`is_edited` turns true). The comment author or the post author can delete |
+| POST / DELETE | `comments/{id}/pin/` | The post or reel author pins one top-level comment (pinning another replaces it) |
 | POST / DELETE | `comments/{id}/like/` | |
 | GET | `comments/{id}/replies/` | |
 
@@ -467,6 +474,19 @@ Post `type` is one of `text`, `image`, `carousel`, `video` or `mixed`.
 | POST / DELETE | `stories/{id}/react/` | `reaction`: `fire, love, laugh, wow, sad, clap` |
 | POST | `stories/{id}/reply/` | `content`, sent as a DM to the author and linked to the story |
 | GET | `stories/{id}/viewers/` | Author only, with each viewer's reaction |
+
+### GIFs
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `gifs/?q=` | Your GIF library, newest first. Paged |
+| GET | `gifs/discover/?q=` | Other people's public GIFs, most used first |
+| POST | `gifs/upload/` | `media_id` (a .gif uploaded with purpose `gif`), `title?, is_public?` |
+| POST | `gifs/from-video/` | `media_id` (video uploaded with purpose `gif`), `start, end` (at most `GIF_VIDEO_MAX_SECONDS`), `width` (240, 320, 480), `fps` (5, 8, 10, 12, 15), `speed` (0.5, 1, 1.5, 2), `text?` (caption on the GIF), `title?, is_public?`. Rendered by Cloudinary; the source video is deleted afterwards |
+| POST | `gifs/from-images/` | `media_ids[]` (2 to `GIF_MAX_FRAMES` photos uploaded with purpose `gif`, in order), `delay_ms` (60 to 3000 per photo), `width`, `aspect` (`square`, `portrait`, `landscape`), `loop` (false plays once), `text?, title?, is_public?`. Assembled on the server; the photos are deleted afterwards |
+| GET / PATCH / DELETE | `gifs/{id}/` | Yours or a public one; owner PATCH `title, is_public`, DELETE removes the file |
+
+A GIF's `url` can be sent as `gif_url` in messages and comments by its owner, or by anyone if it is public. GIFs are silent.
 
 ### Messages
 
@@ -558,9 +578,14 @@ Live is not recorded: there is no replay.
 | GET | `ads/?count=3` | Running ads, weighted random. The app shows one after every few feed posts, labelled Sponsored |
 | POST | `ads/{id}/impression/` | Ad was on screen |
 | POST | `ads/{id}/click/` | Button tapped. Returns `{link_url}` to open |
-| GET | `music/search/?q=&genre=&limit=` | `{catalogue, original, popular, catalogue_enabled}`. `catalogue`: Jamendo tracks (when `JAMENDO_CLIENT_ID` is set) plus Openverse tracks (title, artist or genre match) whose Creative Commons licence fits the app (see `MUSIC_COMMERCIAL_USE`). `original`: FlashX users' original sounds. Empty `q` and `genre` return trending tracks and the most used sounds |
+| GET | `music/search/?q=&genre=&limit=&min_duration=&max_duration=` | `{catalogue, original, popular, trending, catalogue_enabled}`. `catalogue`: Jamendo tracks (when `JAMENDO_CLIENT_ID` is set) plus Openverse tracks (title, artist or genre match) whose Creative Commons licence fits the app (see `MUSIC_COMMERCIAL_USE`). `original`: FlashX users' original sounds. Empty `q` and `genre` return trending tracks and the most used sounds |
 | GET | `music/genres/` | Genre filters for the picker |
-| GET | `music/sounds/{id}/` | One stored sound with `uses_count` and `usable` |
+| GET / PATCH / DELETE | `music/sounds/{id}/` | One stored sound with `uses_count`, `usable`, `available`, `is_saved`, `is_owner`. Owner: PATCH `title, description, allow_reuse, is_public` (public/private only for uploaded sounds); DELETE removes an uploaded sound everywhere (posts that used it keep the name, with no audio) or stops reuse of a video's sound |
+| POST | `music/sounds/` | Publish an original sound: `media_id` (audio uploaded with purpose `sound`), `title, description?, start?, end?` (seconds of the file to use, at most `SOUND_CLIP_MAX_SECONDS`), `cover_media_id?, is_public, allow_reuse` |
+| POST / DELETE | `music/sounds/{id}/save/` | Save or unsave a sound |
+| POST | `music/sounds/{id}/report/` | `reason, details?` (`ip` for audio used without permission). Reports of sounds also work through `reports/` with `target_type=sound` |
+| GET | `music/saved/`, `music/mine/` | Saved sounds; your original sounds (including private and switched-off ones). Paged |
+| GET | `music/recent/`, `music/trending/` | Sounds you used recently; sounds used most on new posts, reels and stories this week |
 | GET | `music/sounds/{id}/posts/`, `music/sounds/{id}/reels/` | Posts or reels using a sound, newest first |
 
 Posts, reels and stories take `sound_id` (`"123"` for a stored sound, `"jamendo:456"` or `"openverse:<uuid>"` for a catalogue track), `sound_start` (seconds), `sound_volume` and `original_volume` (0..1). Catalogue details are re-read from Jamendo on the server, so the app cannot attach arbitrary audio. Reads return `sound` with the licence name and link, an `attribution` line, the mix, and `plays_separately` (false when the sound is the video's own soundtrack). A video posted without a chosen song becomes an **original sound** others can use, unless `allow_sound_reuse` is false or the post is not public. No YouTube or other unlicensed audio is used. Older posts keep their Deezer or iTunes preview as an inactive sound that still plays but cannot be added to new posts.

@@ -10,7 +10,7 @@ def active_stories(viewer):
     following = Follow.objects.filter(follower=viewer).values("following_id")
     qs = (
         Story.objects.active()
-        .select_related("author__profile_image", "sound")
+        .select_related("author__profile_image", "sound__owner")
         .filter(Q(author__is_private=False) | Q(author=viewer) | Q(author_id__in=following))
     )
     qs = exclude_blocked(qs, viewer, "author_id")

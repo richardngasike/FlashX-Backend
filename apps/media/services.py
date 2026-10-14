@@ -24,6 +24,7 @@ def max_duration_for(purpose: str):
         MediaPurpose.STORY: limits["STORY_VIDEO_MAX_SECONDS"],
         MediaPurpose.REEL: limits["REEL_MAX_SECONDS"],
         MediaPurpose.MESSAGE: limits["MESSAGE_VIDEO_MAX_SECONDS"],
+        MediaPurpose.SOUND: limits.get("SOUND_MAX_SECONDS", 600),
     }.get(purpose)
 
 
