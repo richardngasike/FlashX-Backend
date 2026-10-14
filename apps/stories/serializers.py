@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from apps.media import cloudinary_service as cld
+from apps.media.serializers import with_effects
 from apps.users.serializers import UserSummarySerializer
 
 from .models import Story
@@ -40,7 +41,7 @@ class StorySerializer(serializers.ModelSerializer):
     def get_media(self, obj) -> dict:
         data = {"type": obj.media_type}
         data.update(cld.variants(obj.cloudinary_public_id, obj.media_type) or {"url": obj.cloudinary_url})
-        return data
+        return with_effects(data, obj.asset if obj.asset_id else None)
 
     def get_sound(self, obj) -> dict | None:
         from apps.posts.serializers import sound_block

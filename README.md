@@ -71,7 +71,7 @@ backend/
     gifs/           GIF creator (from photos or a video segment) and personal GIF library
     wallet/         coins, wallet ledger, gift catalogue and live gifts (buying coins is not open yet)
     calls/          voice and video calls between mutual followers (LiveKit rooms, ringing, missed calls)
-  tests/            API test suite (270 tests, runs against PostgreSQL)
+  tests/            API test suite (273 tests, runs against PostgreSQL)
   tools/e2e/        end-to-end live video and call checks against a real LiveKit server
   .env.example      every environment variable, documented
   .env              ready-to-run local configuration (git-ignored)
@@ -303,7 +303,7 @@ Buying coins is not open: there is no payment provider yet, and coins sold insid
 | `POST_MAX_MEDIA_ITEMS` | `10` | Carousel size |
 | `POST_VIDEO_MAX_SECONDS` | `600` | |
 | `STORY_VIDEO_MAX_SECONDS` | `60` | |
-| `REEL_MAX_SECONDS` | `180` | |
+| `REEL_MAX_SECONDS` | `360` | 6 minutes (the camera offers 30 s, 1 min and 6 min recordings) |
 | `MESSAGE_VIDEO_MAX_SECONDS` | `300` | |
 | `MESSAGE_AUDIO_MAX_SECONDS` | `1800` | Voice notes and audio files in chats |
 | `SOUND_MAX_SECONDS` | `600` | Longest audio file for an uploaded or recorded sound |
@@ -438,7 +438,7 @@ All paths are under `/api/`. Every endpoint needs a token except `health/`, `aut
 | Method | Path | Notes |
 |---|---|---|
 | POST | `media/sign/` | `purpose, resource_type` returns signed Cloudinary parameters |
-| POST | `media/` | Registers a direct upload and returns a `MediaAsset` (attach it by `id`) |
+| POST | `media/` | Registers a direct upload and returns a `MediaAsset` (attach it by `id`). Optional `effects` for videos: `{filter, strength, texts: [{text, style, color, align, x, y, size, rotation}]}` from the in-app editor (positions and sizes are fractions of the frame). Post, reel and story media return it as `effects` inside their URL set and the app draws it while playing; photos are uploaded with their look already applied |
 | POST | `media/upload/` | Multipart `purpose, file`; the server uploads to Cloudinary. Vercel rejects bodies over 4.5 MB |
 | DELETE | `media/{id}/` | Discards an unattached upload |
 

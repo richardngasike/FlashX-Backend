@@ -111,7 +111,70 @@ def _create_asset(owner, purpose, meta, *, is_managed=True) -> MediaAsset:
     )
 
 
-def register_direct_upload(user, *, purpose, resource_type, public_id, version, signature, client_meta=None):
+EFFECT_TEXT_STYLES = {"clean", "bold", "neon", "type", "outline", "serif", "script"}
+EFFECT_ALIGNS = {"left", "center", "right"}
+MAX_EFFECT_TEXTS = 12
+
+
+def _num(value, low, high, default):
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    if v != v:  # NaN
+        return default
+    return max(low, min(high, v))
+
+
+def clean_effects(raw) -> dict:
+    """
+    Keep only the parts of an editor look the app knows how to draw:
+    ``{"filter": slug, "texts": [{text, style, color, x, y, size, rotation, align}]}``.
+    Positions and sizes are fractions of the video frame. Anything else is dropped.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    slug = raw.get("filter")
+    if isinstance(slug, str) and slug and len(slug) <= 32 and slug.replace("_", "").replace("-", "").isalnum():
+        out["filter"] = slug.lower()
+    strength = raw.get("strength")
+    if strength is not None and "filter" in out:
+        out["strength"] = round(_num(strength, 0, 1, 1), 3)
+    texts = []
+    for t in raw.get("texts") or []:
+        if not isinstance(t, dict) or len(texts) >= MAX_EFFECT_TEXTS:
+            continue
+        text = str(t.get("text") or "").strip()[:200]
+        if not text:
+            continue
+        color = str(t.get("color") or "FFFFFFFF").upper().lstrip("#")
+        if len(color) == 6:
+            color = "FF" + color
+        if len(color) != 8 or any(c not in "0123456789ABCDEF" for c in color):
+            color = "FFFFFFFF"
+        style = t.get("style") if t.get("style") in EFFECT_TEXT_STYLES else "clean"
+        align = t.get("align") if t.get("align") in EFFECT_ALIGNS else "center"
+        texts.append(
+            {
+                "text": text,
+                "style": style,
+                "color": color,
+                "align": align,
+                "x": round(_num(t.get("x"), 0, 1, 0.5), 4),
+                "y": round(_num(t.get("y"), 0, 1, 0.5), 4),
+                "size": round(_num(t.get("size"), 0.02, 0.4, 0.075), 4),
+                "rotation": round(_num(t.get("rotation"), -6.3, 6.3, 0), 4),
+            }
+        )
+    if texts:
+        out["texts"] = texts
+    return out
+
+
+def register_direct_upload(
+    user, *, purpose, resource_type, public_id, version, signature, client_meta=None, effects=None
+):
     """
     Register a file the client uploaded straight to Cloudinary using
     parameters from ``sign_upload``. Ownership is proven by the folder path
@@ -126,6 +189,9 @@ def register_direct_upload(user, *, purpose, resource_type, public_id, version, 
     if existing:
         if existing.owner_id != user.id:
             raise ServiceError("This upload does not belong to you.", code="upload_not_owned", status_code=403)
+        if effects is not None and not existing.is_attached:
+            existing.effects = clean_effects(effects)
+            existing.save(update_fields=["effects"])
         return existing
 
     if not cld.verify_response_signature(public_id, version, signature):
@@ -151,7 +217,12 @@ def register_direct_upload(user, *, purpose, resource_type, public_id, version, 
     except ServiceError:
         cld.destroy(public_id, resource_type)
         raise
-    return _create_asset(user, purpose, meta)
+    asset = _create_asset(user, purpose, meta)
+    cleaned = clean_effects(effects)
+    if cleaned:
+        asset.effects = cleaned
+        asset.save(update_fields=["effects"])
+    return asset
 
 
 def upload_from_request(user, *, purpose, uploaded_file) -> MediaAsset:

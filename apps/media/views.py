@@ -52,6 +52,7 @@ class RegisterUploadView(APIView):
             version=d["version"],
             signature=d["signature"],
             client_meta=d,
+            effects=d.get("effects"),
         )
         return Response(MediaAssetSerializer(asset).data, status=status.HTTP_201_CREATED)
 

@@ -22,7 +22,7 @@ def visible_reels(viewer=None):
 
 
 def with_relations(qs, viewer):
-    qs = qs.select_related("author__profile_image", "sound__owner").prefetch_related("hashtags")
+    qs = qs.select_related("author__profile_image", "sound__owner", "asset").prefetch_related("hashtags")
     if not viewer or not viewer.is_authenticated:
         return qs.annotate(is_liked=Value(False), is_saved=Value(False), author_is_following=Value(False))
     return qs.annotate(

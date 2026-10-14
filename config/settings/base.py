@@ -258,7 +258,7 @@ FLASHX_MEDIA_LIMITS = {
     "GIF_MAX_BYTES": config("GIF_MAX_BYTES", default=8 * 1024 * 1024, cast=int),
     "GIF_VIDEO_MAX_SECONDS": config("GIF_VIDEO_MAX_SECONDS", default=10, cast=int),
     "GIF_MAX_FRAMES": config("GIF_MAX_FRAMES", default=30, cast=int),
-    "REEL_MAX_SECONDS": config("REEL_MAX_SECONDS", default=180, cast=int),
+    "REEL_MAX_SECONDS": config("REEL_MAX_SECONDS", default=360, cast=int),
     "MESSAGE_VIDEO_MAX_SECONDS": config("MESSAGE_VIDEO_MAX_SECONDS", default=300, cast=int),
     "MESSAGE_AUDIO_MAX_SECONDS": config("MESSAGE_AUDIO_MAX_SECONDS", default=1800, cast=int),
 }

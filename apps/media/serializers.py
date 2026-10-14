@@ -25,6 +25,8 @@ class RegisterUploadSerializer(serializers.Serializer):
     width = serializers.IntegerField(required=False, min_value=0, allow_null=True)
     height = serializers.IntegerField(required=False, min_value=0, allow_null=True)
     duration = serializers.FloatField(required=False, min_value=0, allow_null=True)
+    # Filter and text overlays chosen in the editor (videos); see services.clean_effects.
+    effects = serializers.JSONField(required=False)
 
 
 class DirectUploadSerializer(serializers.Serializer):
@@ -48,6 +50,7 @@ class MediaAssetSerializer(serializers.ModelSerializer):
             "width",
             "height",
             "duration",
+            "effects",
             "is_attached",
             "urls",
             "created_at",
@@ -56,6 +59,16 @@ class MediaAssetSerializer(serializers.ModelSerializer):
 
     def get_urls(self, obj):
         return cld.variants(obj.public_id, obj.resource_type)
+
+
+def with_effects(urls: dict | None, asset) -> dict | None:
+    """Add the asset's editor look (filter, text overlays) to a URL set."""
+    if urls is None:
+        return None
+    effects = getattr(asset, "effects", None) if asset is not None else None
+    if effects:
+        urls = {**urls, "effects": effects}
+    return urls
 
 
 class MediaFieldsMixin:

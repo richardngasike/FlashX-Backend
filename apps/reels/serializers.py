@@ -2,6 +2,7 @@ from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.media import cloudinary_service as cld
+from apps.media.serializers import with_effects
 from apps.users.serializers import UserSummarySerializer, UserWithFollowStateSerializer
 
 from .models import Reel
@@ -49,7 +50,8 @@ class ReelSerializer(serializers.ModelSerializer):
         return data
 
     def get_video(self, obj) -> dict:
-        return cld.variants(obj.cloudinary_public_id, "video") or {"url": obj.video_url}
+        urls = cld.variants(obj.cloudinary_public_id, "video") or {"url": obj.video_url}
+        return with_effects(urls, obj.asset if obj.asset_id else None)
 
     def get_hashtags(self, obj) -> list[str]:
         return [h.name for h in obj.hashtags.all()]

@@ -4,6 +4,7 @@ from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.media import cloudinary_service as cld
+from apps.media.serializers import with_effects
 from apps.users.serializers import UserSummarySerializer, UserWithFollowStateSerializer
 
 from .models import Category, Hashtag, Mood, Post, PostMedia, Visibility
@@ -62,7 +63,8 @@ class PostMediaSerializer(serializers.ModelSerializer):
         fields = ("id", "media_type", "width", "height", "duration", "order", "urls")
 
     def get_urls(self, obj) -> dict:
-        return cld.variants(obj.cloudinary_public_id, obj.media_type) or {"url": obj.cloudinary_url}
+        urls = cld.variants(obj.cloudinary_public_id, obj.media_type) or {"url": obj.cloudinary_url}
+        return with_effects(urls, obj.asset if obj.asset_id else None)
 
 
 class PostSerializer(serializers.ModelSerializer):

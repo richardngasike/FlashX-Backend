@@ -58,6 +58,10 @@ class MediaAsset(models.Model):
     width = models.PositiveIntegerField(null=True, blank=True)
     height = models.PositiveIntegerField(null=True, blank=True)
     duration = models.FloatField(null=True, blank=True, help_text="Seconds, videos only.")
+    # The look chosen in the app's editor for a video: a colour filter and text
+    # overlays, drawn by the app over the playing video ({"filter": slug,
+    # "texts": [...]}). Photos are uploaded with their look already baked in.
+    effects = models.JSONField(default=dict, blank=True)
     is_attached = models.BooleanField(default=False, db_index=True)
     attached_at = models.DateTimeField(null=True, blank=True)
     # False for assets FlashX must never destroy (e.g. shared seed samples).
