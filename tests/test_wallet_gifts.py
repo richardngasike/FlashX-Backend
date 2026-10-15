@@ -100,9 +100,9 @@ class WalletGiftTests(FlashXTestCase):
     def test_payments_and_transfers_are_coming_soon(self):
         opts = self.assertOk(self.client.get(reverse("wallet-recharge")))
         self.assertFalse(opts["available"])
-        self.assertEqual([m["id"] for m in opts["methods"]], ["mpesa", "airtel", "card"])
+        self.assertEqual([m["id"] for m in opts["methods"]], ["google_play"])
         self.assertError(
-            self.client.post(reverse("wallet-recharge"), {"method": "mpesa", "coins": 100}, format="json"),
+            self.client.post(reverse("wallet-recharge"), {"method": "google_play", "coins": 100}, format="json"),
             503,
             "coming_soon",
         )

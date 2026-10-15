@@ -10,7 +10,7 @@ Marketplace).
 import os
 
 from .base import *  # noqa: F401,F403
-from .base import ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, DATABASES, config
+from .base import ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, DATABASES, SPECTACULAR_SETTINGS, config
 
 DEBUG = False
 
@@ -43,6 +43,17 @@ DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = config("DB_DISABLE_SERVER_
 # the pooler do the pooling.
 if os.environ.get("VERCEL"):
     DATABASES["default"]["CONN_MAX_AGE"] = config("DB_CONN_MAX_AGE", default=0, cast=int)
+
+# ---------------------------------------------------------------------------
+# API documentation
+# ---------------------------------------------------------------------------
+# The schema maps every endpoint; in production only staff signed in to the
+# admin site may read it.
+SPECTACULAR_SETTINGS = {
+    **SPECTACULAR_SETTINGS,
+    "SERVE_PERMISSIONS": ["rest_framework.permissions.IsAdminUser"],
+    "SERVE_AUTHENTICATION": ["rest_framework.authentication.SessionAuthentication"],
+}
 
 # ---------------------------------------------------------------------------
 # HTTPS and cookies

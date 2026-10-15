@@ -20,11 +20,9 @@ from apps.core.exceptions import ServiceError
 from .models import GiftItem, GiftSend, Wallet, WalletTransaction
 
 RECHARGE_PACKAGES = (100, 500, 1000, 2000, 5000, 10000)
-RECHARGE_METHODS = (
-    ("mpesa", "M-PESA", "Instant"),
-    ("airtel", "Airtel Money", "Instant"),
-    ("card", "Card payment", "Visa or Mastercard"),
-)
+# Coins are digital goods used inside the app, so the Android app may only
+# sell them through Google Play's billing system (Play payments policy).
+RECHARGE_METHODS = (("google_play", "Google Play", "Pay with your Google account"),)
 
 
 def _cfg():

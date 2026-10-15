@@ -847,7 +847,11 @@ def gif_search_enabled() -> bool:
 def gif_search(query="", *, kind="gifs", offset=0, limit=24) -> dict:
     """
     Trending (empty query) or matching GIFs/stickers:
-    {"enabled": bool, "results": [{"id", "url", "preview", "width", "height"}], "next_offset": int | None}
+    {"enabled": bool, "provider": "giphy" | "tenor" | None,
+     "results": [{"id", "url", "preview", "width", "height"}], "next_offset": int | None}
+
+    The app shows the provider's attribution ("Powered by GIPHY" / Tenor),
+    which both providers' API terms require.
     """
     import hashlib
 
@@ -856,7 +860,7 @@ def gif_search(query="", *, kind="gifs", offset=0, limit=24) -> dict:
 
     cfg = getattr(settings, "GIFS", {})
     if not gif_search_enabled():
-        return {"enabled": False, "results": [], "next_offset": None}
+        return {"enabled": False, "provider": None, "results": [], "next_offset": None}
     query = (query or "").strip()[:60]
     kind = "stickers" if kind == "stickers" else "gifs"
     offset = max(0, min(int(offset or 0), 500))
@@ -876,6 +880,7 @@ def gif_search(query="", *, kind="gifs", offset=0, limit=24) -> dict:
         logging.getLogger(__name__).warning("GIF search failed: %s", exc)
         raise ServiceError("GIF search is unavailable right now.", code="gif_unavailable", status_code=503) from exc
     data["enabled"] = True
+    data["provider"] = "giphy" if cfg.get("GIPHY_API_KEY") else "tenor"
     cache.set(key, data, 300)
     return data
 
