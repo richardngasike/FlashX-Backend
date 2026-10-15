@@ -53,6 +53,12 @@ class ContentCreateThrottle(FlashXUserRateThrottle):
         return super().allow_request(request, view)
 
 
+class PaymentThrottle(FlashXUserRateThrottle):
+    """Starting payments (each one sends a PIN prompt to a phone)."""
+
+    scope = "payment"
+
+
 class MessageSendThrottle(FlashXUserRateThrottle):
     scope = "message_send"
 

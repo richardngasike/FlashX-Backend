@@ -289,10 +289,26 @@ Both keys blank: `messages/gifs/` returns `enabled: false` and the app hides GIF
 | Variable | Default | Notes |
 |---|---|---|
 | `WALLET_WELCOME_COINS` | `500` | Coins added once, the first time someone opens their wallet or sends a gift. `0` turns the bonus off |
-| `WALLET_KSH_PER_COIN` | `1.0` | Only for showing a coin balance in Ksh. Coins are not exchangeable for money |
+| `WALLET_KSH_PER_COIN` | `1.0` | Price of one coin in Ksh (M-PESA charges whole shillings, rounded up). Coins are not exchangeable for money |
 | `WALLET_MAX_GIFT_QUANTITY` | `99` | Most gifts of one kind sent in one tap |
 
-Buying coins is not open: there is no payment provider yet, and coins sold inside the Android app must go through Google Play Billing. `POST wallet/recharge/` and `POST wallet/transfer/` answer `503 coming_soon`.
+### M-PESA payments (verified badge, coins)
+
+Lipa na M-PESA Online (STK push): the person gets a PIN prompt on their phone, Safaricom calls back with the result, and the badge or coins are given once. If the callback is late, the app's status check asks Daraja directly. Until the four credentials are set, both purchases show "coming soon".
+
+| Variable | Default | Notes |
+|---|---|---|
+| `MPESA_ENVIRONMENT` | `sandbox` | `production` for real money |
+| `MPESA_CONSUMER_KEY` / `MPESA_CONSUMER_SECRET` | | Daraja app credentials |
+| `MPESA_SHORTCODE` | | Paybill number, or the store (head office) number of a till |
+| `MPESA_PASSKEY` | | Lipa na M-PESA Online passkey from Safaricom |
+| `MPESA_TILL_NUMBER` | | Set for a Buy Goods till (payments go to the till); empty for a paybill |
+| `MPESA_CALLBACK_TOKEN` | | Long random secret, e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `MPESA_CALLBACK_BASE_URL` | Vercel production domain | Public https address of this API |
+| `VERIFICATION_PRICE_KSH` | `500` | Price of the verified badge |
+| `PAYMENTS_DIRECT_ENABLED` | `True` | Set `False` before the Android app goes on Google Play: Play requires its own billing for coins and the badge, and then only Google Play is listed (coming soon) |
+
+Airtel Money, cards and coin transfers answer `503 coming_soon`. Payments are listed, read-only, under Payments in the admin.
 
 ### Media and content limits
 

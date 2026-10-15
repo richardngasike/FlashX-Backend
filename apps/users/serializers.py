@@ -1,7 +1,9 @@
 from django.contrib.auth import get_user_model, password_validation
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 
+from apps.core.phone import normalize_ke_phone
 from apps.media import cloudinary_service as cld
 from apps.media.models import MediaPurpose
 from apps.media.services import claim_one, release_asset
@@ -183,6 +185,7 @@ class MeSerializer(UserProfileSerializer):
             "show_activity_status",
             "allow_calls",
             "notification_prefs",
+            "phone_number",
         )
         read_only_fields = fields
 
@@ -205,8 +208,13 @@ class UpdateMeSerializer(serializers.ModelSerializer):
             "is_private",
             "allow_calls",
             "notification_prefs",
+            "phone_number",
         )
-        extra_kwargs = {"username": {"validators": []}, "full_name": {"required": False}}
+        extra_kwargs = {
+            "username": {"validators": []},
+            "full_name": {"required": False},
+            "phone_number": {"validators": []},
+        }
 
     NOTIFICATION_SWITCHES = (
         "pause_all",
@@ -235,6 +243,18 @@ class UpdateMeSerializer(serializers.ModelSerializer):
         validate_username(value)
         if User.objects.filter(username__iexact=value).exclude(pk=self.instance.pk).exists():
             raise serializers.ValidationError("This username is taken.")
+        return value
+
+    def validate_phone_number(self, value):
+        value = (value or "").strip()
+        if not value:
+            return ""
+        try:
+            value = normalize_ke_phone(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages[0]) from None
+        if User.objects.filter(phone_number=value).exclude(pk=self.instance.pk).exists():
+            raise serializers.ValidationError("This number is already used by another account.")
         return value
 
     def validate_full_name(self, value):

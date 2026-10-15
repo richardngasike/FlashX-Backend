@@ -24,7 +24,7 @@ class UserAdmin(BaseUserAdmin):
     )
     list_display_links = ("avatar", "username")
     list_filter = ("is_verified", "is_active", "is_staff", "is_superuser", "created_at")
-    search_fields = ("username", "full_name", "email")
+    search_fields = ("username", "full_name", "email", "phone_number")
     ordering = ("-created_at",)
     list_per_page = 50
     readonly_fields = (
@@ -49,6 +49,7 @@ class UserAdmin(BaseUserAdmin):
                 "fields": (
                     "full_name",
                     "email",
+                    "phone_number",
                     "bio",
                     "website",
                     "is_verified",

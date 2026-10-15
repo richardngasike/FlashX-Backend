@@ -41,6 +41,8 @@ class User(AbstractUser):
     )
 
     is_verified = models.BooleanField(default=False, db_index=True)
+    # Private: never shown to other people. Stored as 2547XXXXXXXX (M-PESA format).
+    phone_number = models.CharField(max_length=12, blank=True, default="")
 
     followers_count = models.PositiveIntegerField(default=0)
     following_count = models.PositiveIntegerField(default=0)
@@ -70,6 +72,10 @@ class User(AbstractUser):
         constraints = [
             models.UniqueConstraint(Lower("username"), name="users_username_ci_unique"),
             models.UniqueConstraint(Lower("email"), name="users_email_ci_unique"),
+            # One account per phone number; empty means none added yet.
+            models.UniqueConstraint(
+                fields=["phone_number"], condition=~models.Q(phone_number=""), name="users_phone_unique"
+            ),
         ]
         indexes = [models.Index(fields=["full_name"])]
 

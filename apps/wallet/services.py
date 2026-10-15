@@ -20,9 +20,18 @@ from apps.core.exceptions import ServiceError
 from .models import GiftItem, GiftSend, Wallet, WalletTransaction
 
 RECHARGE_PACKAGES = (100, 500, 1000, 2000, 5000, 10000)
-# Coins are digital goods used inside the app, so the Android app may only
-# sell them through Google Play's billing system (Play payments policy).
-RECHARGE_METHODS = (("google_play", "Google Play", "Pay with your Google account"),)
+# How coins can be bought. M-PESA is live when it is configured and direct
+# payments are on (PAYMENTS_DIRECT_ENABLED). Before the Android app is on the
+# Play Store, switch direct payments off: Play requires its own billing for
+# coins, and then only Google Play is offered (coming soon).
+DIRECT_METHODS = (
+    ("mpesa", "M-PESA", "Pay from your phone with your M-PESA PIN"),
+    ("airtel", "Airtel Money", "Instant"),
+    ("card", "Card payment", "Visa or Mastercard"),
+)
+PLAY_METHODS = (("google_play", "Google Play", "Pay with your Google account"),)
+MIN_RECHARGE_COINS = 10
+MAX_RECHARGE_COINS = 150_000
 
 
 def _cfg():
@@ -97,7 +106,7 @@ def summary(user) -> dict:
         "received_coins": int(totals.get(WalletTransaction.Kind.GIFT_RECEIVED) or 0),
         "sent_coins": -int(totals.get(WalletTransaction.Kind.GIFT_SENT) or 0),
         "recent": [transaction_payload(t) for t in recent],
-        "payments_available": False,
+        "payments_available": any(m["available"] for m in recharge_methods()),
     }
 
 
@@ -270,11 +279,38 @@ def send_live_gift(stream, sender, *, gift_slug, quantity=1, recipient_id=None, 
     return send, balance
 
 
+def recharge_methods() -> list[dict]:
+    from apps.payments.services import direct_payments_enabled, mpesa_available
+
+    if not direct_payments_enabled():
+        return [{"id": i, "name": n, "detail": d, "available": False} for i, n, d in PLAY_METHODS]
+    live = {"mpesa": mpesa_available()}
+    return [{"id": i, "name": n, "detail": d, "available": live.get(i, False)} for i, n, d in DIRECT_METHODS]
+
+
 def recharge_options() -> dict:
+    from apps.payments.services import coins_price
+
+    methods = recharge_methods()
+    available = any(m["available"] for m in methods)
     return {
-        "available": False,
-        "message": "Buying coins is coming soon.",
+        "available": available,
+        "message": "" if available else "Buying coins is coming soon.",
         "ksh_per_coin": ksh_per_coin(),
-        "methods": [{"id": i, "name": n, "detail": d, "available": False} for i, n, d in RECHARGE_METHODS],
-        "packages": [{"coins": c, "ksh": round(c * ksh_per_coin(), 2)} for c in RECHARGE_PACKAGES],
+        "min_coins": MIN_RECHARGE_COINS,
+        "max_coins": MAX_RECHARGE_COINS,
+        "methods": methods,
+        "packages": [{"coins": c, "ksh": coins_price(c, ksh_per_coin())} for c in RECHARGE_PACKAGES],
     }
+
+
+def method_available(method: str) -> bool:
+    return any(m["id"] == method and m["available"] for m in recharge_methods())
+
+
+@transaction.atomic
+def credit_purchase(user, coins: int, note: str = "") -> WalletTransaction:
+    """Add bought coins (called once per paid M-PESA payment)."""
+    wallet = get_wallet(user)
+    wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
+    return _post(wallet, WalletTransaction.Kind.RECHARGE, int(coins), note=note[:120])

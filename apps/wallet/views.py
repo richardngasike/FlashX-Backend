@@ -3,7 +3,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.pagination import StandardPagination
-from apps.core.throttles import ReactionThrottle
+from apps.core.throttles import PaymentThrottle, ReactionThrottle
+from apps.payments import services as payments
+from apps.payments.models import MpesaPayment
+from apps.payments.views import PhoneField
 
 from . import services
 
@@ -17,7 +20,8 @@ class GiftSendSerializer(serializers.Serializer):
 
 class RechargeSerializer(serializers.Serializer):
     method = serializers.CharField(max_length=20)
-    coins = serializers.IntegerField(min_value=1)
+    coins = serializers.IntegerField(min_value=services.MIN_RECHARGE_COINS, max_value=services.MAX_RECHARGE_COINS)
+    phone = PhoneField(max_length=20, required=False)
 
 
 class TransferSerializer(serializers.Serializer):
@@ -83,17 +87,34 @@ class GiftCatalogView(APIView):
 
 
 class RechargeOptionsView(APIView):
-    """GET /api/wallet/recharge/ — payment methods and coin packages (buying is not open yet)."""
+    """
+    GET  /api/wallet/recharge/  payment methods (each marked available or not)
+         and coin packages with their price in Ksh.
+    POST /api/wallet/recharge/ {method: "mpesa", coins, phone}  sends the
+         M-PESA PIN prompt; then poll GET /api/payments/{id}/. Other methods
+         answer 503 coming_soon.
+    """
 
     serializer_class = RechargeSerializer
 
+    def get_throttles(self):
+        return [PaymentThrottle()] if self.request.method == "POST" else super().get_throttles()
+
     def get(self, request):
+        payments.refresh_pending(request.user, MpesaPayment.Purpose.COINS)
         return Response(services.recharge_options())
 
     def post(self, request):
-        """Buying coins isn't open yet: always answers 503 coming_soon."""
-        RechargeSerializer(data=request.data).is_valid(raise_exception=True)
-        raise services.coming_soon("Payments")
+        s = RechargeSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        d = s.validated_data
+        if d["method"] != "mpesa" or not services.method_available("mpesa"):
+            raise services.coming_soon("Payments")
+        phone = d.get("phone") or request.user.phone_number
+        if not phone:
+            raise serializers.ValidationError({"phone": ["Enter your M-PESA number."]})
+        payment = payments.start_coin_purchase(request.user, phone, d["coins"], services.ksh_per_coin())
+        return Response(payments.payload(payment), status=status.HTTP_201_CREATED)
 
 
 class TransferView(APIView):

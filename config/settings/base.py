@@ -56,6 +56,7 @@ LOCAL_APPS = [
     "apps.calls",
     "apps.gifs",
     "apps.wallet",
+    "apps.payments",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -164,6 +165,7 @@ REST_FRAMEWORK = {
         "typing": config("THROTTLE_TYPING", default="40/min"),
         "gif_search": config("THROTTLE_GIF_SEARCH", default="60/min"),
         "live_action": config("THROTTLE_LIVE_ACTION", default="60/min"),
+        "payment": config("THROTTLE_PAYMENT", default="10/hour"),
     },
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
 }
@@ -224,6 +226,25 @@ WALLET = {
     "WELCOME_COINS": config("WALLET_WELCOME_COINS", default=500, cast=int),
     "KSH_PER_COIN": config("WALLET_KSH_PER_COIN", default=1.0, cast=float),
     "MAX_GIFT_QUANTITY": config("WALLET_MAX_GIFT_QUANTITY", default=99, cast=int),
+}
+
+PAYMENTS = {
+    # Off before publishing on Google Play (Play billing is required there for coins and badges).
+    "DIRECT_ENABLED": config("PAYMENTS_DIRECT_ENABLED", default=True, cast=bool),
+    "VERIFICATION_PRICE_KSH": config("VERIFICATION_PRICE_KSH", default=500, cast=int),
+}
+
+# Safaricom Daraja (Lipa na M-PESA Online). Payments stay "coming soon" until
+# the key, secret, short code and passkey are set. See apps/payments/mpesa.py.
+MPESA = {
+    "ENVIRONMENT": config("MPESA_ENVIRONMENT", default="sandbox"),
+    "CONSUMER_KEY": config("MPESA_CONSUMER_KEY", default=""),
+    "CONSUMER_SECRET": config("MPESA_CONSUMER_SECRET", default=""),
+    "SHORTCODE": config("MPESA_SHORTCODE", default=""),
+    "PASSKEY": config("MPESA_PASSKEY", default=""),
+    "TILL_NUMBER": config("MPESA_TILL_NUMBER", default=""),
+    "CALLBACK_BASE_URL": config("MPESA_CALLBACK_BASE_URL", default=""),
+    "CALLBACK_TOKEN": config("MPESA_CALLBACK_TOKEN", default=""),
 }
 
 FLASHX_MEDIA_LIMITS = {
