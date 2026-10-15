@@ -7,6 +7,9 @@ logger = logging.getLogger(__name__)
 # can be run again when the first try could not reach the database.
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SAFE_POST_PATHS = frozenset({"/api/auth/login/"})
+# Polled every few seconds by the app; the next poll is the retry, and
+# repeating them would only add load while connections are scarce.
+_POLLED_SUFFIXES = ("/typing/", "/unread-count/")
 
 
 class DatabaseRetryMiddleware:
@@ -33,4 +36,6 @@ class DatabaseRetryMiddleware:
 
     @staticmethod
     def _repeatable(request):
+        if request.path.endswith(_POLLED_SUFFIXES):
+            return False
         return request.method in _SAFE_METHODS or (request.method == "POST" and request.path in _SAFE_POST_PATHS)
