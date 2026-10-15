@@ -20,7 +20,8 @@ class HealthView(APIView):
         try:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT 1")
-        except Exception:  # pragma: no cover - reported, not raised
+        except Exception as exc:  # pragma: no cover - reported, not raised
+            logger.error("Health check: database unavailable: %s: %s", type(exc).__name__, exc)
             db_ok = False
         from apps.live.livekit import is_configured as livekit_configured
         from apps.music.services import catalogue_status, provider_names

@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -8,6 +10,8 @@ from apps.media import cloudinary_service as cld
 
 from .models import DeviceToken, Notification
 from .serializers import DeviceTokenDeleteSerializer, DeviceTokenSerializer, NotificationSerializer
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_targets(notifications):
@@ -200,11 +204,14 @@ class TestPushView(APIView):
             high_priority=True,
         )
         if not result["enabled"]:
-            message = "Push is not configured on the server (FCM_SERVICE_ACCOUNT_JSON is empty)."
+            message = "Notifications are not available right now."
         elif result["devices"] == 0:
             message = "This account has no registered phones. Open the app, sign in and allow notifications."
         elif result["sent"]:
             message = f"Sent to {result['sent']} of {result['devices']} phone(s)."
         else:
-            message = "Firebase did not accept the notification: " + "; ".join(result["errors"][:3])
-        return Response({**result, "message": message})
+            logger.warning("Test push rejected: %s", "; ".join(result["errors"][:3]))
+            message = "The test notification could not be delivered. Try again later."
+        # Provider error text stays in the logs, never in the response.
+        public = {k: v for k, v in result.items() if k != "errors"}
+        return Response({**public, "message": message})

@@ -37,6 +37,13 @@ for _host in filter(None, _vercel_hosts):
 # transaction mode, which does not support server-side cursors.
 DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = config("DB_DISABLE_SERVER_SIDE_CURSORS", default=True, cast=bool)
 
+# Serverless (Vercel): every warm instance would otherwise keep its own
+# connection open between requests and fill the pooler's client limit, after
+# which new requests fail until idle instances die. Open per request and let
+# the pooler do the pooling.
+if os.environ.get("VERCEL"):
+    DATABASES["default"]["CONN_MAX_AGE"] = config("DB_CONN_MAX_AGE", default=0, cast=int)
+
 # ---------------------------------------------------------------------------
 # HTTPS and cookies
 # ---------------------------------------------------------------------------

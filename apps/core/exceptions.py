@@ -2,6 +2,7 @@ import logging
 
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import DatabaseError, InterfaceError, OperationalError, connection
 from django.http import Http404
 from rest_framework import exceptions, status
 from rest_framework.response import Response
@@ -28,7 +29,7 @@ class ServiceError(exceptions.APIException):
 class MediaServiceUnavailable(ServiceError):
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     default_code = "media_service_unavailable"
-    default_detail = "The media service is temporarily unavailable. Try again shortly."
+    default_detail = "Uploads are temporarily unavailable. Try again shortly."
 
 
 _CODE_MAP = {
@@ -58,6 +59,30 @@ def _first_message(details):
     return None
 
 
+UNAVAILABLE_MESSAGE = "We couldn't complete that right now. Please try again in a moment."
+
+
+def _discard_connection():
+    # Inside a transaction the atomic block's exit cleans up instead.
+    if connection.in_atomic_block:
+        return
+    try:
+        connection.close()
+    except Exception:  # noqa: BLE001 - already broken; nothing else to do
+        pass
+
+
+def _unavailable_response():
+    response = Response(
+        {"success": False, "error": {"code": "unavailable", "message": UNAVAILABLE_MESSAGE, "details": None}},
+        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+    response["Retry-After"] = "2"
+    # Read by DatabaseRetryMiddleware, which repeats safe requests once.
+    response.db_unavailable = True
+    return response
+
+
 def flashx_exception_handler(exc, context):
     if isinstance(exc, DjangoValidationError):
         exc = exceptions.ValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
@@ -68,11 +93,23 @@ def flashx_exception_handler(exc, context):
 
     response = exception_handler(exc, context)
     if response is None:
-        logger.exception("Unhandled API error", exc_info=exc)
+        if isinstance(exc, (OperationalError, InterfaceError)):
+            # Lost or refused database connection (pooler full, network blip,
+            # cold start). Drop the broken connection so the next request
+            # opens a fresh one, and tell the client to retry shortly.
+            logger.error("Database unavailable: %s: %s", type(exc).__name__, exc)
+            _discard_connection()
+            return _unavailable_response()
+        if isinstance(exc, DatabaseError):
+            logger.exception("Database error", exc_info=exc)
+            _discard_connection()
+        else:
+            logger.exception("Unhandled API error", exc_info=exc)
+        # Never describe the failure to the client.
         return Response(
             {
                 "success": False,
-                "error": {"code": "server_error", "message": "Something went wrong on our side.", "details": None},
+                "error": {"code": "unavailable", "message": UNAVAILABLE_MESSAGE, "details": None},
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )

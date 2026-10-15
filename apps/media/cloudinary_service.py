@@ -42,7 +42,7 @@ def configure():
 
 def require_configured():
     if not is_configured():
-        raise MediaServiceUnavailable("Media uploads are not configured on this server.")
+        raise MediaServiceUnavailable()
     configure()
 
 
@@ -127,7 +127,7 @@ def fetch_resource(public_id: str, resource_type: str) -> dict:
     try:
         res = cloudinary.api.resource(public_id, resource_type=resource_type)
     except cloudinary.exceptions.NotFound:
-        raise ServiceError("Uploaded file was not found on the media service.", code="upload_not_found") from None
+        raise ServiceError("That upload could not be found. Please upload it again.", code="upload_not_found") from None
     except cloudinary.exceptions.Error as exc:
         logger.warning("Cloudinary resource lookup failed: %s", exc)
         raise MediaServiceUnavailable() from exc

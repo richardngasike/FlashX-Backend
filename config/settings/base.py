@@ -70,6 +70,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "apps.core.middleware.DatabaseRetryMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -100,6 +101,11 @@ DATABASES = {
         conn_health_checks=True,
     )
 }
+# Fail fast on an unreachable database instead of hanging the request.
+if "postgresql" in DATABASES["default"].get("ENGINE", ""):
+    DATABASES["default"].setdefault("OPTIONS", {})["connect_timeout"] = config(
+        "DB_CONNECT_TIMEOUT", default=10, cast=int
+    )
 
 AUTH_USER_MODEL = "users.User"
 

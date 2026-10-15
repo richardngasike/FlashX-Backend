@@ -181,7 +181,7 @@ class TestPushEndpointTests(FlashXTestCase):
     def test_reports_disabled(self):
         data = self.assertOk(self.client.post(self.url))
         self.assertFalse(data["enabled"])
-        self.assertIn("not configured", data["message"])
+        self.assertIn("not available", data["message"])
 
     def test_reports_missing_devices_and_success(self):
         mock.patch.object(push, "is_enabled", return_value=True).start()
@@ -202,7 +202,8 @@ class TestPushEndpointTests(FlashXTestCase):
         DeviceToken.objects.create(user=self.user, token="t1", platform="android")
         data = self.assertOk(self.client.post(self.url))
         self.assertEqual(data["sent"], 0)
-        self.assertIn("PERMISSION_DENIED", data["message"])
+        self.assertIn("could not be delivered", data["message"])
+        self.assertNotIn("PERMISSION_DENIED", str(data))
 
     def test_health_reports_push_flag(self):
         self.assertIn("push", self.assertOk(self.client.get(reverse("health"))))
