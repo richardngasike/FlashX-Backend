@@ -291,8 +291,8 @@ class RegisterSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=80)
     username = serializers.CharField(max_length=30)
     email = serializers.EmailField()
-    password = serializers.CharField(write_only=True, trim_whitespace=False)
-    confirm_password = serializers.CharField(write_only=True, trim_whitespace=False)
+    password = serializers.CharField(write_only=True, trim_whitespace=False, max_length=128)
+    confirm_password = serializers.CharField(write_only=True, trim_whitespace=False, max_length=128)
 
     def validate_full_name(self, value):
         value = value.strip()
@@ -331,8 +331,8 @@ class RegisterSerializer(serializers.Serializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    identifier = serializers.CharField(help_text="Username or email.")
-    password = serializers.CharField(trim_whitespace=False)
+    identifier = serializers.CharField(max_length=254, help_text="Username or email.")
+    password = serializers.CharField(trim_whitespace=False, max_length=128)
 
 
 class LogoutSerializer(serializers.Serializer):
@@ -340,8 +340,8 @@ class LogoutSerializer(serializers.Serializer):
 
 
 class ChangePasswordSerializer(serializers.Serializer):
-    current_password = serializers.CharField(trim_whitespace=False)
-    new_password = serializers.CharField(trim_whitespace=False)
+    current_password = serializers.CharField(trim_whitespace=False, max_length=128)
+    new_password = serializers.CharField(trim_whitespace=False, max_length=128)
 
     def validate(self, attrs):
         user = self.context["request"].user
@@ -356,16 +356,16 @@ class PasswordResetRequestSerializer(serializers.Serializer):
 
 
 class PasswordResetConfirmSerializer(serializers.Serializer):
-    uid = serializers.CharField()
-    token = serializers.CharField()
-    new_password = serializers.CharField(trim_whitespace=False)
+    uid = serializers.CharField(max_length=64)
+    token = serializers.CharField(max_length=128)
+    new_password = serializers.CharField(trim_whitespace=False, max_length=128)
 
 
 class PasswordResetCodeSerializer(serializers.Serializer):
     email = serializers.EmailField()
     code = serializers.RegexField(r"^\d{6}$", error_messages={"invalid": "Enter the 6-digit code from the email."})
-    new_password = serializers.CharField(trim_whitespace=False)
+    new_password = serializers.CharField(trim_whitespace=False, max_length=128)
 
 
 class DeleteAccountSerializer(serializers.Serializer):
-    password = serializers.CharField(trim_whitespace=False)
+    password = serializers.CharField(trim_whitespace=False, max_length=128)

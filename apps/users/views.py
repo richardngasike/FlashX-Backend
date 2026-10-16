@@ -16,7 +16,13 @@ from apps.blocks.models import Block
 from apps.blocks.selectors import blocking_me
 from apps.core.exceptions import ServiceError
 from apps.core.pagination import StandardPagination
-from apps.core.throttles import AuthRateThrottle, PasswordResetThrottle
+from apps.core.throttles import (
+    AuthRateThrottle,
+    LookupThrottle,
+    PasswordResetThrottle,
+    RegisterThrottle,
+    TokenRefreshThrottle,
+)
 from apps.follows import services as follow_services
 from apps.follows.models import Follow, FollowRequest
 
@@ -50,7 +56,7 @@ class RegisterView(APIView):
 
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [AuthRateThrottle]
+    throttle_classes = [RegisterThrottle]
 
     def post(self, request):
         s = RegisterSerializer(data=request.data)
@@ -73,10 +79,20 @@ class LoginView(APIView):
     def post(self, request):
         s = LoginSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        user = services.authenticate_identifier(s.validated_data["identifier"], s.validated_data["password"])
+        identifier = s.validated_data["identifier"]
+        # Many wrong passwords for one account, from any number of addresses: pause it.
+        if services.login_locked(identifier):
+            raise ServiceError(
+                "Too many attempts. Try again in a few minutes or reset your password.",
+                code="throttled",
+                status_code=429,
+            )
+        user = services.authenticate_identifier(identifier, s.validated_data["password"])
         if user is None:
+            services.record_login_failure(identifier)
             # Explicit 401: the view has no authenticators, so AuthenticationFailed would become 403.
             raise ServiceError("Invalid username/email or password.", code="invalid_credentials", status_code=401)
+        services.clear_login_failures(identifier)
         from django.contrib.auth.models import update_last_login
 
         update_last_login(None, user)
@@ -87,7 +103,7 @@ class LoginView(APIView):
 
 
 class RefreshView(TokenRefreshView):
-    throttle_classes = [AuthRateThrottle]
+    throttle_classes = [TokenRefreshThrottle]
 
 
 class LogoutView(APIView):
@@ -167,7 +183,7 @@ class UsernameAvailabilityView(APIView):
 
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_classes = [AuthRateThrottle]
+    throttle_classes = [LookupThrottle]
 
     def get(self, request):
         username = (request.query_params.get("username") or "").strip()

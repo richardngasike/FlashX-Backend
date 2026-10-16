@@ -206,4 +206,9 @@ class TestPushEndpointTests(FlashXTestCase):
         self.assertNotIn("PERMISSION_DENIED", str(data))
 
     def test_health_reports_push_flag(self):
-        self.assertIn("push", self.assertOk(self.client.get(reverse("health"))))
+        from django.test import override_settings
+
+        self.assertNotIn("push", self.assertOk(self.client.get(reverse("health"))))
+        with override_settings(CRON_SECRET="cron-test"):
+            res = self.client.get(reverse("health"), HTTP_AUTHORIZATION="Bearer cron-test")
+        self.assertIn("push", self.assertOk(res))

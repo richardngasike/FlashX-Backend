@@ -72,7 +72,17 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "apps.core.middleware.DatabaseRetryMiddleware",
+    "apps.core.middleware.SecurityHeadersMiddleware",
+    "apps.core.middleware.AdminLoginThrottleMiddleware",
 ]
+
+# "default" is per-process memory (fine for short-lived lookups). "security"
+# holds rate limits and sign-in lockouts; production points it at the
+# database so the counts are shared by every server instance.
+CACHES = {
+    "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "flashx-default"},
+    "security": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "flashx-security"},
+}
 
 ROOT_URLCONF = "config.urls"
 ADMIN_URL = config("ADMIN_URL", default="admin/")
@@ -155,8 +165,13 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": config("THROTTLE_ANON", default="60/min"),
         "user": config("THROTTLE_USER", default="600/min"),
-        "auth": config("THROTTLE_AUTH", default="10/min"),
-        "password_reset": config("THROTTLE_PASSWORD_RESET", default="5/hour"),
+        # Per IP. Mobile carriers put many people behind one address, so these
+        # are generous; per-account lockout is what stops password guessing.
+        "login": config("THROTTLE_LOGIN", default="30/min"),
+        "register": config("THROTTLE_REGISTER", default="30/hour"),
+        "token_refresh": config("THROTTLE_TOKEN_REFRESH", default="60/min"),
+        "lookup": config("THROTTLE_LOOKUP", default="60/min"),
+        "password_reset": config("THROTTLE_PASSWORD_RESET", default="20/hour"),
         "upload": config("THROTTLE_UPLOAD", default="60/hour"),
         "content_create": config("THROTTLE_CONTENT_CREATE", default="60/hour"),
         "message_send": config("THROTTLE_MESSAGE_SEND", default="120/min"),
@@ -186,6 +201,10 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
     "USER_ID_FIELD": "id",
     "USER_ID_CLAIM": "user_id",
+    # Tokens carry a fingerprint of the password hash: changing or resetting
+    # the password ends every session at once, access tokens included.
+    "CHECK_REVOKE_TOKEN": True,
+    "REVOKE_TOKEN_CLAIM": "hash_password",
 }
 
 SPECTACULAR_SETTINGS = {

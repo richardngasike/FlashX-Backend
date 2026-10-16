@@ -28,29 +28,31 @@ class HealthView(APIView):
         from apps.notifications.push import is_enabled as push_enabled
         from apps.users.services import email_delivery_enabled
 
-        video = livekit_configured()
         pending = _pending_migrations() if db_ok else None
         healthy = db_ok and not pending
-        return Response(
-            {
-                "status": "ok" if healthy else "degraded",
-                "database": db_ok,
-                # Unapplied migrations make most requests fail with 500s: run `manage.py migrate`.
-                "migrations_pending": pending,
+        body = {
+            "status": "ok" if healthy else "degraded",
+            "database": db_ok,
+            # Unapplied migrations make most requests fail with 500s: run `manage.py migrate`.
+            "migrations_pending": pending,
+            "api_version": API_VERSION,
+        }
+        # Which services are configured is for operators only:
+        # send "Authorization: Bearer <CRON_SECRET>" to see it.
+        from apps.core.cron import _authorized
+
+        if _authorized(request):
+            video = livekit_configured()
+            body["push"] = push_enabled()
+            body["features"] = {
+                "live": video,
+                "calls": video,
                 "push": push_enabled(),
-                # What this deployment can do; the app reads it to explain missing setup precisely.
-                "features": {
-                    "live": video,
-                    "calls": video,
-                    "push": push_enabled(),
-                    "music": provider_names(),
-                    "music_status": catalogue_status(),
-                    "email": email_delivery_enabled(),
-                },
-                "api_version": API_VERSION,
-            },
-            status=200 if healthy else 503,
-        )
+                "music": provider_names(),
+                "music_status": catalogue_status(),
+                "email": email_delivery_enabled(),
+            }
+        return Response(body, status=200 if healthy else 503)
 
 
 _schema_current = False

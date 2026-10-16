@@ -30,7 +30,54 @@ def authenticate_identifier(identifier: str, password: str):
     return user
 
 
+# Per-account sign-in protection: after this many wrong passwords within the
+# window, the account refuses sign-in until the window passes. Counted in the
+# shared cache, so it holds across server instances and source addresses.
+LOGIN_MAX_FAILURES = 10
+LOGIN_LOCK_SECONDS = 15 * 60
+
+
+def _login_key(identifier: str) -> str:
+    """One counter per account, whether it is named by username or email."""
+    import hashlib
+
+    identifier = (identifier or "").strip()
+    pk = (
+        User.objects.filter(Q(username__iexact=identifier) | Q(email__iexact=identifier))
+        .values_list("pk", flat=True)
+        .first()
+    )
+    subject = f"user:{pk}" if pk else f"name:{identifier.lower()}"
+    return "login-fail:" + hashlib.sha256(subject.encode()).hexdigest()
+
+
+def login_locked(identifier: str) -> bool:
+    from django.core.cache import caches
+
+    return int(caches["security"].get(_login_key(identifier), 0)) >= LOGIN_MAX_FAILURES
+
+
+def record_login_failure(identifier: str) -> None:
+    from django.core.cache import caches
+
+    cache = caches["security"]
+    key = _login_key(identifier)
+    # add() starts the window; incr() keeps its original expiry.
+    if not cache.add(key, 1, LOGIN_LOCK_SECONDS):
+        try:
+            cache.incr(key)
+        except ValueError:
+            cache.set(key, 1, LOGIN_LOCK_SECONDS)
+
+
+def clear_login_failures(identifier: str) -> None:
+    from django.core.cache import caches
+
+    caches["security"].delete(_login_key(identifier))
+
+
 RESET_CODE_MINUTES = 15
+RESET_CODES_PER_HOUR = 3
 RESET_CODE_MAX_ATTEMPTS = 5
 
 
@@ -67,6 +114,12 @@ def send_password_reset(email: str):
         )
     user = User.objects.filter(email__iexact=email.strip(), is_active=True).first()
     if user is None:
+        return
+    # A few codes an hour per account, so the endpoint can't be used to flood
+    # someone's inbox. The response is the same either way.
+    recent = PasswordResetCode.objects.filter(user=user, created_at__gte=timezone.now() - timedelta(hours=1)).count()
+    if recent >= RESET_CODES_PER_HOUR:
+        logger.warning("Password reset codes limit reached for user %s", user.pk)
         return
     code = f"{secrets.randbelow(1_000_000):06d}"
     PasswordResetCode.objects.filter(user=user, used_at__isnull=True).update(used_at=timezone.now())

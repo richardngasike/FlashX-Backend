@@ -1,7 +1,21 @@
 import hmac
 
 from django.conf import settings
+from django.core.cache import caches
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
+
+
+class SharedCacheMixin:
+    """
+    Count in the shared "security" cache (the database in production) instead
+    of each server instance's memory. On serverless hosting every instance
+    has its own memory, so a per-process limit is easy to get around by
+    spreading requests out; the shared count holds across all of them.
+    """
+
+    @property
+    def cache(self):
+        return caches["security"]
 
 
 class ProxyAwareIdentMixin:
@@ -30,15 +44,32 @@ class FlashXUserRateThrottle(ProxyAwareIdentMixin, UserRateThrottle):
     pass
 
 
-class AuthRateThrottle(FlashXAnonRateThrottle):
-    scope = "auth"
+class AuthRateThrottle(SharedCacheMixin, FlashXAnonRateThrottle):
+    """Signing in, per IP. Generous, because mobile networks put many people
+    behind one address; per-account lockout (users.services) stops guessing."""
+
+    scope = "login"
 
 
-class PasswordResetThrottle(FlashXAnonRateThrottle):
+class RegisterThrottle(SharedCacheMixin, FlashXAnonRateThrottle):
+    scope = "register"
+
+
+class TokenRefreshThrottle(FlashXAnonRateThrottle):
+    scope = "token_refresh"
+
+
+class LookupThrottle(FlashXAnonRateThrottle):
+    """Username availability checks while typing."""
+
+    scope = "lookup"
+
+
+class PasswordResetThrottle(SharedCacheMixin, FlashXAnonRateThrottle):
     scope = "password_reset"
 
 
-class UploadThrottle(FlashXUserRateThrottle):
+class UploadThrottle(SharedCacheMixin, FlashXUserRateThrottle):
     scope = "upload"
 
 
@@ -53,7 +84,7 @@ class ContentCreateThrottle(FlashXUserRateThrottle):
         return super().allow_request(request, view)
 
 
-class PaymentThrottle(FlashXUserRateThrottle):
+class PaymentThrottle(SharedCacheMixin, FlashXUserRateThrottle):
     """Starting payments (each one sends a PIN prompt to a phone)."""
 
     scope = "payment"
@@ -63,7 +94,7 @@ class MessageSendThrottle(FlashXUserRateThrottle):
     scope = "message_send"
 
 
-class ReportThrottle(FlashXUserRateThrottle):
+class ReportThrottle(SharedCacheMixin, FlashXUserRateThrottle):
     scope = "report"
 
 

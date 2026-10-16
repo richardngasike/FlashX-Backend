@@ -141,6 +141,10 @@ class PasswordTests(FlashXTestCase):
     def test_email_delivery_flag(self):
         from django.test import override_settings
 
+        # Service details in the health check need the operator secret.
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer cron-test")
+        self.enterContext(override_settings(CRON_SECRET="cron-test"))
+
         from apps.users.services import email_delivery_enabled
 
         with override_settings(EMAIL_BACKEND="django.core.mail.backends.console.EmailBackend"):

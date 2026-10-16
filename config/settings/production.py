@@ -10,7 +10,7 @@ Marketplace).
 import os
 
 from .base import *  # noqa: F401,F403
-from .base import ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, DATABASES, SPECTACULAR_SETTINGS, config
+from .base import ALLOWED_HOSTS, CACHES, CSRF_TRUSTED_ORIGINS, DATABASES, REST_FRAMEWORK, SPECTACULAR_SETTINGS, config
 
 DEBUG = False
 
@@ -43,6 +43,26 @@ DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = config("DB_DISABLE_SERVER_
 # the pooler do the pooling.
 if os.environ.get("VERCEL"):
     DATABASES["default"]["CONN_MAX_AGE"] = config("DB_CONN_MAX_AGE", default=0, cast=int)
+
+# Rate limits and sign-in lockouts shared by every instance (see base.CACHES).
+# The table is created by the core.0001 migration.
+CACHES = {
+    **CACHES,
+    "security": {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "flashx_security_cache",
+        "OPTIONS": {"MAX_ENTRIES": 100_000, "CULL_FREQUENCY": 4},
+    },
+}
+
+# The client address is the one added by the hosting proxy (Vercel sets
+# X-Forwarded-For); anything a client puts before it is ignored, so rate
+# limits can't be dodged with a forged header.
+REST_FRAMEWORK = {**REST_FRAMEWORK, "NUM_PROXIES": config("NUM_PROXIES", default=1, cast=int)}
+
+# Admin sessions end after 8 hours; the API itself uses tokens, not sessions.
+SESSION_COOKIE_AGE = 8 * 60 * 60
+CSRF_COOKIE_HTTPONLY = True
 
 # ---------------------------------------------------------------------------
 # API documentation

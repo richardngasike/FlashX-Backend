@@ -43,7 +43,7 @@ def for_you(viewer, seed=None):
 
     if not seed:
         seed = f"{getattr(viewer, 'pk', 0)}-{timezone.now():%Y%m%d%H}"
-    salt = hashlib.sha1(str(seed).encode()).hexdigest()[:12]
+    salt = hashlib.sha1(str(seed).encode(), usedforsecurity=False).hexdigest()[:12]
     qs = visible_reels(viewer)
     seen = Exists(ReelView.objects.filter(reel=OuterRef("pk"), user=viewer))
     own = RawSQL("reels_reel.author_id = %s", (viewer.pk,))

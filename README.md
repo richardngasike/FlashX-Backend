@@ -339,8 +339,21 @@ The format is `number/sec|min|hour|day`.
 |---|---|---|
 | `THROTTLE_ANON` | `60/min` | Unauthenticated requests, per IP |
 | `THROTTLE_USER` | `600/min` | Authenticated requests, per user |
-| `THROTTLE_AUTH` | `10/min` | Register, login, refresh, per IP |
-| `THROTTLE_PASSWORD_RESET` | `5/hour` | Password reset, per IP |
+| `THROTTLE_LOGIN` | `30/min` | Sign-in attempts per IP (shared across instances) |
+| `THROTTLE_REGISTER` | `30/hour` | New accounts per IP (shared across instances) |
+| `THROTTLE_TOKEN_REFRESH` | `60/min` | Token refreshes per IP |
+| `THROTTLE_LOOKUP` | `60/min` | Username availability checks per IP |
+| `THROTTLE_PASSWORD_RESET` | `20/hour` | Password reset requests per IP (shared); each account also gets at most 3 codes an hour |
+| `NUM_PROXIES` | `1` (production) | Proxy hops in front of the API; the client IP is taken from the hop they add, so forged `X-Forwarded-For` values are ignored |
+
+#### Security behaviour
+
+- **Rate limits that hold on serverless:** sign-in, registration, password reset, uploads, payments and reports are counted in a shared database cache (`flashx_security_cache`, created by migration `core.0001`), not per-instance memory.
+- **Account lockout:** 10 wrong passwords within 15 minutes lock that account's sign-in for the rest of the window, whichever address they come from; a successful sign-in clears the count.
+- **Password changes end sessions:** tokens carry a fingerprint of the password hash (`CHECK_REVOKE_TOKEN`), so changing or resetting a password invalidates every existing access and refresh token.
+- **Admin sign-in:** at most 10 attempts per address per 15 minutes; admin sessions last 8 hours.
+- **Response headers:** API responses send a `default-src 'none'` Content-Security-Policy and `Cache-Control: no-store` for signed-in requests; link-preview pages allow no scripts; every response sends a restrictive `Permissions-Policy`.
+- **Health check:** public `/api/health/` returns only status, database, pending migrations and API version. Service details need `Authorization: Bearer <CRON_SECRET>`.
 | `THROTTLE_UPLOAD` | `60/hour` | Upload signing and uploads |
 | `THROTTLE_CONTENT_CREATE` | `60/hour` | New posts, reels, stories, comments |
 | `THROTTLE_MESSAGE_SEND` | `120/min` | Messages and story replies |

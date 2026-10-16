@@ -865,7 +865,7 @@ def gif_search(query="", *, kind="gifs", offset=0, limit=24) -> dict:
     kind = "stickers" if kind == "stickers" else "gifs"
     offset = max(0, min(int(offset or 0), 500))
     limit = max(1, min(int(limit or 24), 50))
-    key = "gifs:" + hashlib.sha1(f"{kind}|{query.lower()}|{offset}|{limit}".encode()).hexdigest()
+    key = "gifs:" + hashlib.sha1(f"{kind}|{query.lower()}|{offset}|{limit}".encode(), usedforsecurity=False).hexdigest()
     cached = cache.get(key)
     if cached is not None:
         return cached

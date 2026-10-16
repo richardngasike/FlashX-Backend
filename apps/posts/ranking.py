@@ -56,7 +56,7 @@ JITTER = 1.8
 
 
 def _key(viewer_id, seed) -> str:
-    return "feed:" + hashlib.sha1(f"{viewer_id}|{seed}".encode()).hexdigest()
+    return "feed:" + hashlib.sha1(f"{viewer_id}|{seed}".encode(), usedforsecurity=False).hexdigest()
 
 
 def _last_key(viewer_id) -> str:
@@ -150,7 +150,7 @@ def rank(viewer, visible, seed):
     ids = [r[0] for r in rows]
     liked = set(Like.objects.filter(user=viewer, post_id__in=ids).values_list("post_id", flat=True))
     shown_before = set(cache.get(_last_key(viewer.pk)) or [])
-    rng_salt = hashlib.sha1(str(seed).encode()).hexdigest()
+    rng_salt = hashlib.sha1(str(seed).encode(), usedforsecurity=False).hexdigest()
 
     scored = []
     for pid, author_id, category_id, created_at, likes, comments, shares, saves in rows:

@@ -438,9 +438,14 @@ class LiveKitAdminTokenTests(FlashXTestCase):
         self.assertTrue(grant["roomAdmin"] and grant["roomCreate"])
 
     def test_health_reports_features(self):
-        data = self.assertOk(self.client.get(reverse("health")))
-        self.assertIn("features", data)
-        self.assertEqual(data["features"]["live"], livekit.is_configured())
+        from django.test import override_settings
+
+        public = self.assertOk(self.client.get(reverse("health")))
+        self.assertNotIn("features", public)
+        with override_settings(CRON_SECRET="cron-test"):
+            data = self.assertOk(self.client.get(reverse("health"), HTTP_AUTHORIZATION="Bearer cron-test"))
+            self.assertIn("features", data)
+            self.assertEqual(data["features"]["live"], livekit.is_configured())
 
     def test_health_reports_pending_migrations(self):
         from unittest import mock
