@@ -52,15 +52,14 @@ def _login_key(identifier: str) -> str:
 
 
 def login_locked(identifier: str) -> bool:
-    from django.core.cache import caches
+    from apps.core.cache import security_cache
 
-    return int(caches["security"].get(_login_key(identifier), 0)) >= LOGIN_MAX_FAILURES
+    return int(security_cache.get(_login_key(identifier), 0)) >= LOGIN_MAX_FAILURES
 
 
 def record_login_failure(identifier: str) -> None:
-    from django.core.cache import caches
+    from apps.core.cache import security_cache as cache
 
-    cache = caches["security"]
     key = _login_key(identifier)
     # add() starts the window; incr() keeps its original expiry.
     if not cache.add(key, 1, LOGIN_LOCK_SECONDS):
@@ -71,9 +70,9 @@ def record_login_failure(identifier: str) -> None:
 
 
 def clear_login_failures(identifier: str) -> None:
-    from django.core.cache import caches
+    from apps.core.cache import security_cache
 
-    caches["security"].delete(_login_key(identifier))
+    security_cache.delete(_login_key(identifier))
 
 
 RESET_CODE_MINUTES = 15

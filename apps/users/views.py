@@ -30,6 +30,7 @@ from . import selectors, services
 from .serializers import (
     ChangePasswordSerializer,
     DeleteAccountSerializer,
+    FlashXTokenRefreshSerializer,
     LoginSerializer,
     LogoutSerializer,
     MeSerializer,
@@ -104,6 +105,7 @@ class LoginView(APIView):
 
 
 class RefreshView(TokenRefreshView):
+    serializer_class = FlashXTokenRefreshSerializer
     throttle_classes = [TokenRefreshThrottle]
 
 

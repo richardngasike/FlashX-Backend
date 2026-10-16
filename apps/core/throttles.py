@@ -1,8 +1,9 @@
 import hmac
 
 from django.conf import settings
-from django.core.cache import caches
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
+
+from .cache import security_cache
 
 
 class SharedCacheMixin:
@@ -15,7 +16,7 @@ class SharedCacheMixin:
 
     @property
     def cache(self):
-        return caches["security"]
+        return security_cache
 
 
 class ProxyAwareIdentMixin:

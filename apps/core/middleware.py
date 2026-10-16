@@ -99,10 +99,10 @@ class AdminLoginThrottleMiddleware:
         from django.conf import settings
 
         if request.method == "POST" and request.path == f"/{settings.ADMIN_URL.strip('/')}/login/":
-            from django.core.cache import caches
             from django.http import HttpResponse
 
-            cache = caches["security"]
+            from .cache import security_cache as cache
+
             key = f"admin-login:{client_ip(request)}"
             if not cache.add(key, 1, self.window_seconds):
                 try:

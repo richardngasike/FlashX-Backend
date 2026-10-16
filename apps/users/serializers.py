@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model, password_validation
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 
 from apps.core.phone import normalize_ke_phone
 from apps.media import cloudinary_service as cld
@@ -381,6 +382,35 @@ class PasswordResetCodeSerializer(serializers.Serializer):
         if not attrs.get("reset_token") and not (attrs.get("email") and attrs.get("code")):
             raise serializers.ValidationError({"code": "Enter the 6-digit code from the email."})
         return attrs
+
+
+class FlashXTokenRefreshSerializer(TokenRefreshSerializer):
+    """
+    Refresh with two extra checks, so a session that has ended gets a clean
+    401 (the app then signs out) instead of a new access token that is
+    refused straight away: the account must still exist and be active, and
+    the token must match the current password (see CHECK_REVOKE_TOKEN).
+    """
+
+    def validate(self, attrs):
+        from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+        from rest_framework_simplejwt.settings import api_settings
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from rest_framework_simplejwt.utils import get_md5_hash_password
+
+        ended = InvalidToken("Your session has ended. Please sign in again.")
+        try:
+            token = RefreshToken(attrs["refresh"])
+        except TokenError:
+            raise ended from None
+        user = User.objects.filter(pk=token.payload.get(api_settings.USER_ID_CLAIM)).first()
+        if user is None or not user.is_active:
+            raise ended
+        if api_settings.CHECK_REVOKE_TOKEN and token.payload.get(
+            api_settings.REVOKE_TOKEN_CLAIM
+        ) != get_md5_hash_password(user.password):
+            raise ended
+        return super().validate(attrs)
 
 
 class DeleteAccountSerializer(serializers.Serializer):

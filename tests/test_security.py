@@ -66,8 +66,11 @@ class SecurityTests(FlashXTestCase):
 
     # Rate limits ---------------------------------------------------------------
     def test_security_throttles_use_the_shared_cache(self):
+        from apps.core.cache import security_cache
+
         for throttle in (AuthRateThrottle(), PasswordResetThrottle(), PaymentThrottle()):
-            self.assertIs(throttle.cache, caches["security"])
+            self.assertIs(throttle.cache, security_cache)
+        self.assertIs(security_cache.backend, caches["security"])
 
     def test_admin_login_attempts_are_limited(self):
         from apps.core.middleware import AdminLoginThrottleMiddleware
@@ -102,3 +105,32 @@ class SecurityTests(FlashXTestCase):
     def test_public_health_check_hides_service_details(self):
         body = self.assertOk(self.client.get(reverse("health")))
         self.assertEqual(set(body), {"status", "database", "migrations_pending", "api_version"})
+
+    # Resilience ---------------------------------------------------------------
+    @override_settings(
+        CACHES={
+            "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
+            "security": {"BACKEND": "django.core.cache.backends.db.DatabaseCache", "LOCATION": "not_created_yet"},
+        }
+    )
+    def test_sign_in_works_before_the_cache_table_exists(self):
+        self.assertOk(self.login(PASSWORD))
+        self.assertError(self.login("wrong-password"), 401, "invalid_credentials")
+
+    def test_sessions_from_before_the_update_end_cleanly(self):
+        from unittest import mock
+
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        with mock.patch("rest_framework_simplejwt.settings.api_settings.CHECK_REVOKE_TOKEN", False):
+            old = RefreshToken.for_user(self.user)
+        res = self.client.post(reverse("auth-refresh"), {"refresh": str(old)}, format="json")
+        self.assertEqual(res.status_code, 401)
+
+    def test_refresh_for_a_deleted_account_is_401(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        token = str(RefreshToken.for_user(self.user))
+        self.user.delete()
+        res = self.client.post(reverse("auth-refresh"), {"refresh": token}, format="json")
+        self.assertEqual(res.status_code, 401)
