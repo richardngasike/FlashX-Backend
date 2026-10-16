@@ -162,37 +162,98 @@ def send_password_reset(email: str):
         logger.exception("Password reset email failed for user %s", user.pk)
 
 
-def reset_password_with_code(email: str, code: str, new_password: str):
+RESET_TOKEN_SALT = "flashx.password-reset"
+RESET_TOKEN_SECONDS = 10 * 60
+
+
+def _code_errors():
+    from rest_framework.exceptions import ValidationError
+
+    wrong = ValidationError({"code": "Wrong code. Check the email and try again."})
+    expired = ValidationError({"code": "This code has expired. Request a new one."})
+    return wrong, expired
+
+
+def _check_reset_code(email: str, code: str):
+    """The account and its live code record, or a ValidationError. Wrong tries count."""
     import hmac
 
-    from django.contrib.auth import password_validation
     from django.utils import timezone
-    from rest_framework.exceptions import ValidationError
 
     from .models import PasswordResetCode
 
-    invalid = ValidationError({"code": "That code is wrong or has expired. Request a new one."})
+    wrong, expired = _code_errors()
     user = User.objects.filter(email__iexact=(email or "").strip(), is_active=True).first()
     if user is None:
-        raise invalid
+        # Same answer as a wrong code: never reveal whether the email has an account.
+        raise wrong
     record = (
         PasswordResetCode.objects.filter(user=user, used_at__isnull=True, expires_at__gt=timezone.now())
         .order_by("-created_at")
         .first()
     )
     if record is None or record.attempts >= RESET_CODE_MAX_ATTEMPTS:
-        raise invalid
+        raise expired
     if not hmac.compare_digest(record.code_hash, _hash_code(user.pk, (code or "").strip())):
         record.attempts += 1
         record.save(update_fields=["attempts"])
-        raise invalid
+        raise expired if record.attempts >= RESET_CODE_MAX_ATTEMPTS else wrong
+    return user, record
+
+
+def verify_reset_code(email: str, code: str) -> str:
+    """
+    Step 2 of the code reset: check the emailed code. Returns a reset token,
+    valid for 10 minutes and only for this code, that step 3 exchanges for
+    the new password.
+    """
+    from django.core import signing
+
+    user, record = _check_reset_code(email, code)
+    return signing.dumps({"u": user.pk, "r": record.pk, "h": record.code_hash[:16]}, salt=RESET_TOKEN_SALT)
+
+
+def _set_new_password(user, record, new_password: str):
+    from django.contrib.auth import password_validation
+    from django.utils import timezone
+
     password_validation.validate_password(new_password, user=user)
     user.set_password(new_password)
     user.save(update_fields=["password"])
     record.used_at = timezone.now()
     record.save(update_fields=["used_at"])
     blacklist_all_tokens(user)
+    clear_login_failures(user.username)
     return user
+
+
+def reset_password_with_token(reset_token: str, new_password: str):
+    """Step 3: the token from verify_reset_code plus the new password. Single use."""
+    from django.core import signing
+    from django.utils import timezone
+    from rest_framework.exceptions import ValidationError
+
+    from .models import PasswordResetCode
+
+    invalid = ValidationError({"reset_token": "This reset has expired. Start again and request a new code."})
+    try:
+        data = signing.loads(reset_token, salt=RESET_TOKEN_SALT, max_age=RESET_TOKEN_SECONDS)
+    except signing.BadSignature:
+        raise invalid from None
+    record = (
+        PasswordResetCode.objects.select_related("user")
+        .filter(pk=data.get("r"), user_id=data.get("u"), used_at__isnull=True, expires_at__gt=timezone.now())
+        .first()
+    )
+    if record is None or not record.user.is_active or record.code_hash[:16] != data.get("h"):
+        raise invalid
+    return _set_new_password(record.user, record, new_password)
+
+
+def reset_password_with_code(email: str, code: str, new_password: str):
+    """Code and new password in one request (kept for older app versions)."""
+    user, record = _check_reset_code(email, code)
+    return _set_new_password(user, record, new_password)
 
 
 def reset_password(uid: str, token: str, new_password: str):

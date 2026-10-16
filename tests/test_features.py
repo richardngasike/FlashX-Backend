@@ -89,3 +89,55 @@ class PasswordResetCodeTests(FlashXTestCase):
     def test_unknown_email_sends_nothing(self):
         self.client.post(reverse("auth-password-reset"), {"email": "nobody@example.com"})
         self.assertEqual(len(mail.outbox), 0)
+
+    # Three steps: code checked first, then the new password with the token.
+    def verify(self, code, email="resetme@example.com"):
+        return self.client.post(reverse("auth-password-reset-code-verify"), {"email": email, "code": code})
+
+    def test_verify_then_set_password(self):
+        code = self.request_code()
+        token = self.assertOk(self.verify(code))["reset_token"]
+        url = reverse("auth-password-reset-code")
+        self.assertOk(self.client.post(url, {"reset_token": token, "new_password": "N3w-strong-pass!"}))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("N3w-strong-pass!"))
+        # The token works once.
+        res = self.client.post(url, {"reset_token": token, "new_password": "An0ther-pass-123"})
+        self.assertError(res, 400)
+        self.assertIn("reset_token", res.json()["error"]["details"])
+
+    def test_wrong_code_says_wrong_then_expired(self):
+        code = self.request_code()
+        wrong = "000000" if code != "000000" else "111111"
+        first = self.verify(wrong)
+        self.assertError(first, 400, "validation_error")
+        self.assertIn("Wrong code", first.json()["error"]["details"]["code"])
+        for _ in range(3):
+            self.verify(wrong)
+        last = self.verify(wrong)
+        self.assertIn("expired", last.json()["error"]["details"]["code"])
+        # Locked out: even the right code is refused now.
+        self.assertError(self.verify(code), 400)
+
+    def test_verify_does_not_reveal_accounts(self):
+        res = self.verify("123456", email="nobody@example.com")
+        self.assertIn("Wrong code", res.json()["error"]["details"]["code"])
+
+    def test_tampered_or_stale_token_is_refused(self):
+        code = self.request_code()
+        token = self.assertOk(self.verify(code))["reset_token"]
+        url = reverse("auth-password-reset-code")
+        self.assertError(self.client.post(url, {"reset_token": token + "x", "new_password": "N3w-strong-pass!"}), 400)
+        # A newer code replaces the old one, so the earlier token stops working.
+        self.request_code()
+        self.assertError(self.client.post(url, {"reset_token": token, "new_password": "N3w-strong-pass!"}), 400)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(PASSWORD))
+
+    def test_new_password_rules_apply_and_keep_the_token(self):
+        code = self.request_code()
+        token = self.assertOk(self.verify(code))["reset_token"]
+        url = reverse("auth-password-reset-code")
+        weak = self.client.post(url, {"reset_token": token, "new_password": "12345678"})
+        self.assertError(weak, 400, "validation_error")
+        self.assertOk(self.client.post(url, {"reset_token": token, "new_password": "N3w-strong-pass!"}))

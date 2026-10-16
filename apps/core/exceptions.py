@@ -126,7 +126,9 @@ def flashx_exception_handler(exc, context):
         code = "validation_error"
 
     message = _first_message(details) or "Request failed."
-    if isinstance(details, dict) and set(details.keys()) <= {"detail", "code", "messages"}:
+    # DRF/SimpleJWT wrap their own errors as {"detail", "code", "messages"}; those
+    # carry nothing beyond the message. A form field named "code" is kept.
+    if isinstance(details, dict) and "detail" in details and set(details.keys()) <= {"detail", "code", "messages"}:
         details = None
 
     extra = getattr(exc, "extra_details", None)

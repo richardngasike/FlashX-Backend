@@ -361,10 +361,26 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
     new_password = serializers.CharField(trim_whitespace=False, max_length=128)
 
 
-class PasswordResetCodeSerializer(serializers.Serializer):
+_CODE_FIELD = {"invalid": "Enter the 6-digit code from the email."}
+
+
+class PasswordResetCodeVerifySerializer(serializers.Serializer):
     email = serializers.EmailField()
-    code = serializers.RegexField(r"^\d{6}$", error_messages={"invalid": "Enter the 6-digit code from the email."})
+    code = serializers.RegexField(r"^\d{6}$", error_messages=_CODE_FIELD)
+
+
+class PasswordResetCodeSerializer(serializers.Serializer):
+    """Either reset_token (from the verify step) or email + code, plus the new password."""
+
+    reset_token = serializers.CharField(required=False, max_length=512)
+    email = serializers.EmailField(required=False)
+    code = serializers.RegexField(r"^\d{6}$", required=False, error_messages=_CODE_FIELD)
     new_password = serializers.CharField(trim_whitespace=False, max_length=128)
+
+    def validate(self, attrs):
+        if not attrs.get("reset_token") and not (attrs.get("email") and attrs.get("code")):
+            raise serializers.ValidationError({"code": "Enter the 6-digit code from the email."})
+        return attrs
 
 
 class DeleteAccountSerializer(serializers.Serializer):

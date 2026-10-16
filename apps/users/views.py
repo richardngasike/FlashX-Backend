@@ -34,6 +34,7 @@ from .serializers import (
     LogoutSerializer,
     MeSerializer,
     PasswordResetCodeSerializer,
+    PasswordResetCodeVerifySerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
     PresenceSerializer,
@@ -162,8 +163,32 @@ class PasswordResetConfirmView(APIView):
         return Response({"detail": "Password updated. You can now log in."})
 
 
+class PasswordResetCodeVerifyView(APIView):
+    """
+    POST /api/auth/password/reset/code/verify/ {email, code}
+    Checks the emailed code. Returns {reset_token} (10 minutes, single use)
+    for setting the new password. A wrong code answers 400 with error code
+    details on the "code" field; each wrong try counts toward the limit.
+    """
+
+    serializer_class = PasswordResetCodeVerifySerializer
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [PasswordResetThrottle]
+
+    def post(self, request):
+        s = PasswordResetCodeVerifySerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        return Response({"reset_token": services.verify_reset_code(**s.validated_data)})
+
+
 class PasswordResetCodeView(APIView):
-    """POST /api/auth/password/reset/code/ — set a new password with the 6-digit emailed code."""
+    """
+    POST /api/auth/password/reset/code/ {reset_token, new_password}
+    Sets the new password after the code was verified. Older clients may
+    send {email, code, new_password} instead.
+    """
 
     serializer_class = PasswordResetCodeSerializer
 
@@ -174,7 +199,11 @@ class PasswordResetCodeView(APIView):
     def post(self, request):
         s = PasswordResetCodeSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        services.reset_password_with_code(**s.validated_data)
+        d = s.validated_data
+        if d.get("reset_token"):
+            services.reset_password_with_token(d["reset_token"], d["new_password"])
+        else:
+            services.reset_password_with_code(d["email"], d["code"], d["new_password"])
         return Response({"detail": "Password updated. You can now log in."})
 
 
