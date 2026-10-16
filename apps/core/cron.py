@@ -55,7 +55,21 @@ class MaintenanceCronView(APIView):
                 },
                 status=401,
             )
+        from apps.users.services import purge_unconfirmed_accounts
+
         stories = purge_expired()
         uploads = purge_orphans(older_than_hours=24)
-        logger.info("Maintenance: purged %s expired stories, %s orphaned uploads", stories, uploads)
-        return Response({"expired_stories_deleted": stories, "orphaned_uploads_deleted": uploads})
+        unconfirmed = purge_unconfirmed_accounts(older_than_days=7)
+        logger.info(
+            "Maintenance: purged %s expired stories, %s orphaned uploads, %s unconfirmed accounts",
+            stories,
+            uploads,
+            unconfirmed,
+        )
+        return Response(
+            {
+                "expired_stories_deleted": stories,
+                "orphaned_uploads_deleted": uploads,
+                "unconfirmed_accounts_deleted": unconfirmed,
+            }
+        )

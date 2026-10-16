@@ -10,6 +10,9 @@ User = get_user_model()
 def base_users(viewer=None):
     """Active users; with ``viewer``, also hides anyone blocked by or blocking them."""
     qs = User.objects.filter(is_active=True).select_related("profile_image", "cover_image")
+    if viewer is not None and getattr(viewer, "is_authenticated", False):
+        # Accounts that never confirmed their email stay invisible to others.
+        qs = qs.filter(Q(email_verified=True) | Q(pk=viewer.pk))
     return exclude_blocked(qs, viewer)
 
 

@@ -187,6 +187,7 @@ class MeSerializer(UserProfileSerializer):
             "allow_calls",
             "notification_prefs",
             "phone_number",
+            "email_verified",
         )
         read_only_fields = fields
 
@@ -328,6 +329,8 @@ class RegisterSerializer(serializers.Serializer):
             email=validated_data["email"],
             full_name=validated_data["full_name"],
             password=validated_data["password"],
+            # Confirmed once the emailed code is entered.
+            email_verified=False,
         )
 
 
@@ -411,6 +414,14 @@ class FlashXTokenRefreshSerializer(TokenRefreshSerializer):
         ) != get_md5_hash_password(user.password):
             raise ended
         return super().validate(attrs)
+
+
+class EmailCodeSerializer(serializers.Serializer):
+    code = serializers.RegexField(r"^\d{6}$", error_messages={"invalid": "Enter the 6-digit code from the email."})
+
+
+class EmailChangeSerializer(serializers.Serializer):
+    email = serializers.EmailField()
 
 
 class DeleteAccountSerializer(serializers.Serializer):

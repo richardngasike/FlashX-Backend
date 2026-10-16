@@ -146,7 +146,8 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # ---------------------------------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ("apps.users.authentication.FlashXJWTAuthentication",),
-    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
+    # Signed in and email confirmed (see apps.users.permissions).
+    "DEFAULT_PERMISSION_CLASSES": ("apps.users.permissions.IsVerifiedUser",),
     "DEFAULT_RENDERER_CLASSES": ("apps.core.renderers.FlashXJSONRenderer",),
     "DEFAULT_PARSER_CLASSES": (
         "rest_framework.parsers.JSONParser",

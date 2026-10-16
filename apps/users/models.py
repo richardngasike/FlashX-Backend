@@ -41,6 +41,11 @@ class User(AbstractUser):
     )
 
     is_verified = models.BooleanField(default=False, db_index=True)
+    # Self-registered accounts start unconfirmed and must enter the code sent
+    # to their email. Accounts made any other way (admin, existing accounts
+    # before this field) count as confirmed.
+    email_verified = models.BooleanField(default=True, db_index=True)
+    email_verified_at = models.DateTimeField(null=True, blank=True)
     # Private: never shown to other people. Stored as 2547XXXXXXXX (M-PESA format).
     phone_number = models.CharField(max_length=12, blank=True, default="")
 
@@ -121,3 +126,22 @@ class PasswordResetCode(models.Model):
 
     def __str__(self):
         return f"reset code for {self.user_id}"
+
+
+class EmailVerificationCode(models.Model):
+    """A 6-digit code emailed to confirm an address. Only a keyed hash is stored."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="email_codes")
+    email = models.EmailField(help_text="The address the code was sent to.")
+    code_hash = models.CharField(max_length=64)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [models.Index(fields=["user", "-created_at"])]
+
+    def __str__(self):
+        return f"email code for {self.user_id}"

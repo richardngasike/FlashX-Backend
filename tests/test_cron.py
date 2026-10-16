@@ -41,7 +41,9 @@ class MaintenanceCronTests(FlashXTestCase):
 
         with self.captureOnCommitCallbacks(execute=True):
             data = self.assertOk(self.client.get(URL, HTTP_AUTHORIZATION="Bearer s3cret-value-for-tests"))
-        self.assertEqual(data, {"expired_stories_deleted": 1, "orphaned_uploads_deleted": 1})
+        self.assertEqual(
+            data, {"expired_stories_deleted": 1, "orphaned_uploads_deleted": 1, "unconfirmed_accounts_deleted": 0}
+        )
         self.assertTrue(Story.objects.filter(pk=live.pk).exists())
         self.assertFalse(Story.objects.filter(pk=old.pk).exists())
         self.assertFalse(MediaAsset.objects.filter(pk=orphan.pk).exists())
@@ -52,5 +54,5 @@ class MaintenanceCronTests(FlashXTestCase):
         # Idempotent: a duplicate delivery does nothing.
         self.assertEqual(
             self.assertOk(self.client.get(URL, HTTP_AUTHORIZATION="Bearer s3cret-value-for-tests")),
-            {"expired_stories_deleted": 0, "orphaned_uploads_deleted": 0},
+            {"expired_stories_deleted": 0, "orphaned_uploads_deleted": 0, "unconfirmed_accounts_deleted": 0},
         )

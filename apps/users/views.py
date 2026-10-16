@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Exists, OuterRef
+from django.db.models import Exists, OuterRef, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status
@@ -30,6 +30,8 @@ from . import selectors, services
 from .serializers import (
     ChangePasswordSerializer,
     DeleteAccountSerializer,
+    EmailChangeSerializer,
+    EmailCodeSerializer,
     FlashXTokenRefreshSerializer,
     LoginSerializer,
     LogoutSerializer,
@@ -64,6 +66,8 @@ class RegisterView(APIView):
         s = RegisterSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         user = s.save()
+        # The app shows the code screen next; nothing else works until it is entered.
+        services.send_email_code(user)
         user = selectors.with_follow_flags(selectors.base_users(), user).get(pk=user.pk)
         return Response(
             {"user": MeSerializer(user, context={"request": request}).data, "tokens": services.issue_tokens(user)},
@@ -111,6 +115,7 @@ class RefreshView(TokenRefreshView):
 
 class LogoutView(APIView):
     serializer_class = LogoutSerializer
+    allow_unverified = True
 
     def post(self, request):
         s = LogoutSerializer(data=request.data)
@@ -231,8 +236,54 @@ class UsernameAvailabilityView(APIView):
 # ---------------------------------------------------------------------------
 # Users
 # ---------------------------------------------------------------------------
+class EmailVerifyView(APIView):
+    """
+    POST /api/auth/email/verify/ {code} — confirm the email with the code sent
+    after sign-up. Returns the account (email_verified: true).
+    """
+
+    serializer_class = EmailCodeSerializer
+    allow_unverified = True
+
+    def post(self, request):
+        s = EmailCodeSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        services.verify_email_code(request.user, s.validated_data["code"])
+        user = selectors.with_follow_flags(selectors.base_users(), request.user).get(pk=request.user.pk)
+        return Response(MeSerializer(user, context={"request": request}).data)
+
+
+class EmailResendView(APIView):
+    """POST /api/auth/email/resend/ — a new code (45 s apart, 5 an hour)."""
+
+    serializer_class = EmailChangeSerializer
+    allow_unverified = True
+
+    def post(self, request):
+        if request.user.email_verified:
+            return Response({"detail": "Your email is already confirmed.", "email": request.user.email})
+        services.send_email_code(request.user, enforce_cooldown=True)
+        return Response({"detail": "We sent a new code.", "email": request.user.email})
+
+
+class EmailChangeView(APIView):
+    """POST /api/auth/email/change/ {email} — fix a mistyped address before confirming it."""
+
+    serializer_class = EmailChangeSerializer
+    allow_unverified = True
+
+    def post(self, request):
+        s = EmailChangeSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        services.change_unconfirmed_email(request.user, s.validated_data["email"])
+        user = selectors.with_follow_flags(selectors.base_users(), request.user).get(pk=request.user.pk)
+        return Response(MeSerializer(user, context={"request": request}).data)
+
+
 class MeView(APIView):
     serializer_class = MeSerializer
+    # Before the email is confirmed: read your account or delete it, nothing else.
+    allow_unverified_methods = ("GET", "DELETE")
 
     def _me(self, request):
         return selectors.with_follow_flags(selectors.base_users(), request.user).get(pk=request.user.pk)
@@ -272,7 +323,7 @@ class UserDetailView(generics.RetrieveAPIView):
     def get_queryset(self):
         # Someone who blocked you is not found; someone you blocked stays visible so you can unblock.
         viewer = self.request.user
-        qs = selectors.base_users().exclude(pk__in=blocking_me(viewer))
+        qs = selectors.base_users().filter(Q(email_verified=True) | Q(pk=viewer.pk)).exclude(pk__in=blocking_me(viewer))
         qs = qs.annotate(
             is_blocked=Exists(Block.objects.filter(blocker=viewer, blocked=OuterRef("pk"))),
             is_requested=Exists(FollowRequest.objects.filter(requester=viewer, target=OuterRef("pk"))),

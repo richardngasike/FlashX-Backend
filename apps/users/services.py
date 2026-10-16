@@ -277,3 +277,158 @@ def blacklist_all_tokens(user):
 
     for token in OutstandingToken.objects.filter(user=user).exclude(blacklistedtoken__isnull=False):
         BlacklistedToken.objects.get_or_create(token=token)
+
+
+# ---------------------------------------------------------------------------
+# Email confirmation for new accounts
+# ---------------------------------------------------------------------------
+EMAIL_CODE_MINUTES = 15
+EMAIL_CODE_MAX_ATTEMPTS = 5
+EMAIL_CODES_PER_HOUR = 5
+EMAIL_CODE_RESEND_SECONDS = 45
+
+
+def _email_code_hash(user_id, email: str, code: str) -> str:
+    import hashlib
+    import hmac
+
+    message = f"verify:{user_id}:{email.lower()}:{code}".encode()
+    return hmac.new(settings.SECRET_KEY.encode(), message, hashlib.sha256).hexdigest()
+
+
+def send_email_code(user, *, enforce_cooldown=False) -> None:
+    """Email a fresh 6-digit code to the account's address (earlier codes stop working)."""
+    import secrets
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.core.exceptions import ServiceError
+
+    from .models import EmailVerificationCode
+
+    now = timezone.now()
+    recent = EmailVerificationCode.objects.filter(user=user, created_at__gte=now - timedelta(hours=1))
+    last = recent.order_by("-created_at").first()
+    if enforce_cooldown and last and (now - last.created_at).total_seconds() < EMAIL_CODE_RESEND_SECONDS:
+        wait = EMAIL_CODE_RESEND_SECONDS - int((now - last.created_at).total_seconds())
+        raise ServiceError(
+            f"Wait {wait} seconds before asking for another code.",
+            code="throttled",
+            status_code=429,
+            details={"retry_after": wait},
+        )
+    if recent.count() >= EMAIL_CODES_PER_HOUR:
+        raise ServiceError(
+            "Too many codes requested. Try again in an hour.",
+            code="throttled",
+            status_code=429,
+            details={"retry_after": 3600},
+        )
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    EmailVerificationCode.objects.filter(user=user, used_at__isnull=True).update(used_at=now)
+    EmailVerificationCode.objects.create(
+        user=user,
+        email=user.email,
+        code_hash=_email_code_hash(user.pk, user.email, code),
+        expires_at=now + timedelta(minutes=EMAIL_CODE_MINUTES),
+    )
+    if not email_delivery_enabled():
+        logger.error("Email code for user %s not sent: email delivery is off.", user.pk)
+    name = user.full_name or user.username
+    text = (
+        f"Hi {name},\n\nYour FlashX confirmation code is: {code}\n\n"
+        f"It expires in {EMAIL_CODE_MINUTES} minutes. If you did not create a FlashX account, ignore this email."
+    )
+    html = f"""
+    <div style="font-family:Inter,Arial,sans-serif;background:#0A0D10;padding:32px;color:#FFFFFF">
+      <div style="max-width:440px;margin:0 auto;background:#12161B;border-radius:16px;padding:28px">
+        <div style="font-size:22px;font-weight:800;letter-spacing:-0.5px">
+          Flash<span style="color:#C6F432">X</span>
+        </div>
+        <p style="color:#9AA3AD;margin:20px 0 8px">Hi {escape_html(name)}, confirm your email with this code</p>
+        <div style="font-size:34px;font-weight:800;letter-spacing:8px;color:#C6F432">{code}</div>
+        <p style="color:#9AA3AD;font-size:13px;margin-top:16px">It expires in {EMAIL_CODE_MINUTES} minutes.
+        If you did not create a FlashX account, ignore this email.</p>
+      </div>
+    </div>"""
+    try:
+        send_mail(
+            subject=f"{code} is your FlashX confirmation code",
+            message=text,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            html_message=html,
+        )
+    except Exception:
+        logger.exception("Confirmation email failed for user %s", user.pk)
+
+
+def escape_html(value: str) -> str:
+    from django.utils.html import escape
+
+    return escape(value)
+
+
+def verify_email_code(user, code: str):
+    """Confirm the account's email with the emailed code."""
+    import hmac
+
+    from django.utils import timezone
+    from rest_framework.exceptions import ValidationError
+
+    from .models import EmailVerificationCode
+
+    if user.email_verified:
+        return user
+    wrong = ValidationError({"code": "Wrong code. Check the email and try again."})
+    expired = ValidationError({"code": "This code has expired. Tap Resend code to get a new one."})
+    record = (
+        EmailVerificationCode.objects.filter(user=user, used_at__isnull=True, expires_at__gt=timezone.now())
+        .order_by("-created_at")
+        .first()
+    )
+    if record is None or record.attempts >= EMAIL_CODE_MAX_ATTEMPTS or record.email.lower() != user.email.lower():
+        raise expired
+    if not hmac.compare_digest(record.code_hash, _email_code_hash(user.pk, user.email, (code or "").strip())):
+        record.attempts += 1
+        record.save(update_fields=["attempts"])
+        raise expired if record.attempts >= EMAIL_CODE_MAX_ATTEMPTS else wrong
+    now = timezone.now()
+    record.used_at = now
+    record.save(update_fields=["used_at"])
+    user.email_verified = True
+    user.email_verified_at = now
+    user.save(update_fields=["email_verified", "email_verified_at"])
+    return user
+
+
+def change_unconfirmed_email(user, email: str):
+    """Fix a mistyped address before it is confirmed, and send a code there."""
+    from rest_framework.exceptions import ValidationError
+
+    if user.email_verified:
+        raise ValidationError({"email": "Your email is already confirmed."})
+    email = (email or "").strip().lower()
+    if User.objects.filter(email__iexact=email).exclude(pk=user.pk).exists():
+        raise ValidationError({"email": "An account with this email already exists."})
+    if email != user.email.lower():
+        user.email = email
+        user.save(update_fields=["email"])
+    send_email_code(user, enforce_cooldown=False)
+    return user
+
+
+def purge_unconfirmed_accounts(older_than_days=7) -> int:
+    """Delete self-registered accounts that never confirmed their email."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    cutoff = timezone.now() - timedelta(days=older_than_days)
+    stale = User.objects.filter(email_verified=False, date_joined__lt=cutoff, is_staff=False)
+    count = stale.count()
+    if count:
+        stale.delete()
+    return count
